@@ -1,0 +1,15 @@
+This flowchart outlines a process for anomaly detection and resolution related to "zero usage," SMS counts, and MMS counts, likely within a telecommunications or data monitoring system like Verizon, as indicated by the "Search Verizon" text in the image. 
+Here's a breakdown of the process:
+Starting Point (zero_usage): The process begins by evaluating "zero_usage," suggesting an initial check for accounts or services with no recorded activity.
+Parallel Checks for SMS and MMS: From "zero_usage," the flow splits into two parallel paths to independently assess "sms_cnt" (SMS counts) and "mms_cnt" (MMS counts).
+Anomaly Detection: For both SMS and MMS, a decision point "Is anomalous?" checks if the respective count deviates from expected patterns.
+Anomaly Resolution Path (If Anomalous):
+If an anomaly is detected ("Yes"), the process proceeds to "Traverse Lineage" to trace the origin or history of the anomalous data.
+Following lineage traversal, "Analyze Issue (mismatch found)" is performed to identify the specific cause of the discrepancy.
+After analysis, if a mismatch is found, the process returns to the decision point "Analyze Issue (mismatch found)," suggesting potential iterative analysis or resolution steps until the mismatch is addressed. If a mismatch is not found after analysis, the process presumably proceeds to resolution or moves towards the end.
+Normal Flow Path (If Not Anomalous):
+If no anomaly is detected ("No") for either SMS or MMS, the process continues without requiring lineage traversal or issue analysis.
+For the "sms_cnt" path, if not anomalous, the flow directly leads to "END".
+For the "mms_cnt" path, if not anomalous, the flow also leads to "END."
+Data Insertion/Resolution: The "insert" box, connected to the "No" branch of "Analyze Issue (mismatch found)" in the SMS path, suggests data insertion or updating after an issue is analyzed and potentially resolved, or if no mismatch was found in the initial analysis.
+Process Conclusion: Both paths ultimately converge and lead to the "END" state, signifying the completion of the anomaly detection and resolution process. 

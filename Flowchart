@@ -230,3 +230,156 @@ sample response for step 4 -
 
 
 Make this prompt more flexible and understandable to give to vs code copilot
+Here’s a cleaned-up, structured, and grammar-corrected version of your full multi-step prompt for VS Code Copilot, keeping all the technical details intact but making it easier to read and follow.
+
+
+---
+
+Q & A CoPilot – RAG / Agent Integration Specification
+
+Right-Side Assistant Window
+
+Step 1 – Create DPF Metadata JSON for Single File Ingestion
+
+User request example:
+create dpf metadata json for single file ingestion?
+
+Payload example:
+
+{
+    "input": "create dpf metadata json for single file ingestion?",
+    "embedding_model": "all-distilroberta-v1",
+    "usecase_context_id": "dsb-rag",
+    "llm_parameter": {
+        "max_output_tokens": 1024,
+        "temperature": 0.5,
+        "top_k": 0.5,
+        "top_p": 0.5
+    },
+    "rag_usecase_name": "dfo-resource-dfo-resource",
+    "top_k_context": 5,
+    "rerank_context_enabled": true,
+    "session_id": "1234",
+    "history_limit": 20,
+    "reset_session": false,
+    "enable_conversation": false
+}
+
+Response handling:
+
+Extract response.answer from the API response.
+
+Remove unwanted text such as:
+
+"Here is a sample metadata JSON configuration for single file ingestion:\n\n```json\n"
+
+"json\n"```
+
+""```
+
+
+Convert using JSON.parse() to show in normal JSON format (e.g., "Name": "fixedwidth_skipfooter_TF") without escaped quotes (\"Name\").
+
+Output must be valid JSON only.
+
+
+
+---
+
+Step 2 – Append Additional Step in JSON
+
+User request example:
+append "run sql from file" step without obs json block in the above metadata before the END step and provide metadata json output
+
+Payload example:
+
+{
+    "input": "append \"run sql from file\" step without obs json block in the above metadata before the END step and provide metadata json output"
+}
+
+Response handling:
+
+Extract response.answer.
+
+Remove unwanted text as in Step 1.
+
+Convert with JSON.parse() to show in normal JSON format.
+
+Output must be valid JSON only.
+
+
+
+---
+
+Step 3 – Ask Context-Specific Questions
+
+Example user questions:
+
+what does skipLeadingRows mean in the context
+
+what does writeDisposition mean in the context
+
+
+Payload example:
+
+{
+    "input": "what does skipLeadingRows mean in the context"
+}
+
+Response handling:
+
+payload.input and response.answer are plain strings.
+
+Output is text only (not JSON).
+
+
+
+---
+
+Left-Side Window – Code Editor (Agent-Based Code Generation)
+
+Prompt syntax for inline comment:
+// bmx: 
+
+Example inline comment prompts:
+
+1. // bmx: please can you add gcs file sensor check here?
+
+
+2. // bmx: please can you add skip_header and header_pattern here ? (Capability)
+
+
+
+
+---
+
+Step 4 – Send Entire JSON with Inline Comment for Processing
+
+Take the entire JSON from the editor (including inline comment content but without the // bmx: prefix).
+
+Convert the JSON to doubly-stringified format for payload.
+
+
+Example payload:
+
+{
+    "input": "{\n    \"Name\": \"sample_gcs_to_bq_dag\",\n    \"Type\": \"Batch\",\n    \"Start_Date\": \"datetime.now(tz) - timedelta(days=0)\",\n    \"Schedule_interval\": \"None\",\n    \"max_active_runs\": \"1\",\n    \"Catchup\": \"False\",\n    \"Project_space\": \"your_project_space\",\n    \"Timezone\": \"UTC\",\n    \"description\": \"DAG with Start, GCS to BQ load, and End steps\",\n    \"custom_labels\": [\n        \"app:example\",\n        \"schedule_type:adhoc\",\n        \"lob:example\",\n        \"sla:example\",\n        \"job_type:ingestion\",\n        \"vsad:example\",\n        \"data_domain:example\",\n        \"data_sub_domain:example\",\n        \"product_name:example\",\n        \"usecase_name:example\"\n    ],\n    \"Steps\": [\n        {\n            \"Name\": \"Start\",\n            \"Id\": \"start\",\n            \"Description\": \"This stage indicates the starting point of the task relationship in the dag\",\n            \"OkTo\": \"gcsToBq_bqHook\"\n        },\n    please can you add gcs file sensor check here ?\n    {\n            \"Name\": \"gcsToBq_bqHook\",\n            \"Id\": \"gcsToBq_bqHook\",\n            \"Description\": \"GCS to BQ Pre Staging load\",\n            \"Type\": \"load file from gcs\",\n            \"retries\": \"0\",\n            \"retryDelay\": \"minutes=1\",\n            \"Params\": {\n                \"hook\": {\n                    \"sourceFormat\": \"dat\",\n                    \"datasetId\": \"your_dataset_id\",\n                    \"tableId\": \"your_table_id\",\n                    \"sourceUris\": \"your_file.dat\",\n                    \"fixedWidth\": \"True\",\n                    \"colSpecification\": \"2,5,2\",\n                    \"fieldDelimiter\": \",\",\n                    \"gcp_conn_id\": \"your_gcp_connection_id\",\n                    \"projectId\": \"your_project_id\",\n                    \"skipLeadingRows\": \"0\",\n                    \"skip_header\": \"1\",\n                    \"header_pattern\": \"your_regex_pattern\",\n                    \"writeDisposition\": \"WRITE_TRUNCATE\"\n                }\n            },\n            \"OkTo\": \"end\"\n        },\n        {\n            \"Name\": \"End\",\n            \"Id\": \"end\",\n            \"Description\": \"This stage indicates the ending point of the task relationship in the dag\"\n        }\n    ]\n}"
+}
+
+Response handling:
+
+Extract response.answer as valid JSON.
+
+Ensure modifications from the inline comment are applied in the returned JSON.
+
+
+
+---
+
+This rewritten prompt is clean, free of grammar errors, and preserves all your steps so VS Code Copilot can follow the exact sequence.
+
+
+---
+
+If you want, I can now also condense this into a shorter developer-friendly cheat sheet for quick reference inside VS Code. This will make it even faster for you to follow during implementation. Would you like me to prepare that?
+

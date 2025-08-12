@@ -13,3 +13,220 @@ For the "sms_cnt" path, if not anomalous, the flow directly leads to "END".
 For the "mms_cnt" path, if not anomalous, the flow also leads to "END."
 Data Insertion/Resolution: The "insert" box, connected to the "No" branch of "Analyze Issue (mismatch found)" in the SMS path, suggests data insertion or updating after an issue is analyzed and potentially resolved, or if no mismatch was found in the initial analysis.
 Process Conclusion: Both paths ultimately converge and lead to the "END" state, signifying the completion of the anomaly detection and resolution process. 
+
+
+
+
+For chatbot: https://oa-uat.ebiz.verizon.com/vegas/apps/vz-llm-studio-vegas-service/api/v1/model/infer
+
+For editor(inline comments): https://oa-uat.ebiz.verizon.com/vegas/apps/vz-llm-studio-vegas-service/api/v1/model/infer/editor
+
+Right side Assistant window of Q & A CoPilot (RAG or Agent) –
+
+Step 1, end to end Json -
+
+create dpf metadata json for single file ingestion? --> for json creation
+
+sample payload for Step 1 -
+
+{
+
+"input": "create dpf metadata json for single file ingestion?",
+
+"embedding_model": "all-distilroberta-v1",
+
+"usecase_context_id": "dsb-rag",
+
+"llm_parameter": {
+
+"max_output_tokens": 1024,
+
+"temperature": 0.5,
+
+"top_k": 0.5,
+
+"top_p": 0.5
+
+},
+
+"rag_usecase_name": "dfo-resource-dfo-resource",
+
+"top_k_context": 5,
+
+"rerank_context_enabled": true,
+
+"session_id": "1234",
+
+"history_limit": 20,
+
+"reset_session": false,
+
+"enable_conversation": false
+
+}
+
+the response contain the metadata for the dpf file ingestion. We need to show the "response.answer" from api response in the editor like before in normal json format("Name": "fixedwidth_skipfooter_TF") but not \"\"(\"Name\": \"fixedwidth_skipfooter_TF\").convert using JSON.parse method. Remove unwanted text from answer like "Here is a sample metadata JSON configuration for single file ingestion:\n\n```json\n" and "```json\n" and "```". The response should be in json format only.
+
+sample response from api should look like this -
+
+{
+
+    "response": {
+
+        "answer": "Here is a sample metadata JSON configuration for single file ingestion:\n\n```json\n{\n    \"Name\": \"fixedwidth_skipfooter_TF\",\n    \"Type\": \"Batch\",\n    \"Start_Date\": \"datetime.now(tz) - timedelta(days=0)\",\n    \"Schedule_interval\": \"None\",\n    \"max_active_runs\": \"1\",\n    \"Catchup\": \"False\",\n    \"Project_space\": \"vz-it-k0mv-dpfdo-0\",\n    \"Timezone\": \"UTC\",\n    \"description\": \"The following DAG includes only Ingestion process\",\n    \"custom_tags\": [\n        \"app:thpt\",\n        \"schedule_type:daily\",\n        \"lob:wireless\",\n        \"sla:bau\",\n        \"job_type:inj\",\n        \"vsad:httv\",\n        \"data_domain:legacy\",\n        \"data_sub_domain:legacy\",\n        \"product_name:legacy\",\n        \"usecase_name:legacy\"\n    ],\n    \"Steps\": [\n        {\n            \"Name\": \"Start\",\n            \"Id\": \"start\",\n            \"Description\": \"This stage indicates the starting point of the task relationship in the dag\",\n            \"OkTo\": \"gcsToBq_bqHook\"\n        },\n        {\n            \"Name\": \"gcsToBq_bqHook\",\n            \"Id\": \"gcsToBq_bqHook\",\n            \"Description\": \"GCS to BQ Pre Staging load\",\n            \"Type\": \"load file from gcs\",\n            \"retries\": \"0\",\n            \"retryDelay\": \"minutes=1\",\n            \"Params\": {\n                \"hook\": {\n                    \"sourceFormat\": \"dat\",\n                    \"datasetId\": \"db_beamx\",\n                    \"tableId\": \"dag_history_trg_6\",\n                    \"sourceUris\": \"testdoc5.dat\",\n                    \"fixedWidth\": \"True\",\n                    \"colSpecification\": \"2,5,2\",\n                    \"fieldDelimiter\": \",\",\n                    \"gcp_conn_id\": \"gcp_conn_id_k0mv-dpfdo\",\n                    \"projectId\": \"projectId\",\n                    \"skipLeadingRows\": \"0\",\n                    \"writeDisposition\": \"WRITE_TRUNCATE\",\n                    \"archiveLocation\": \"pos\",\n                    \"createDisposition\": \"CREATE_NEVER\",\n                    \"recipient_email\": \"suryansh.singh@verizon.com\",\n                    \"allowQuotedNewlines\": \"false\",\n                    \"allowJaggedRows\": \"false\",\n                    \"encoding\": \"UTF-8\",\n                    \"ignoreUnknownValues\": \"false\",\n                    \"storeErrorDetails\": \"True\",\n                    \"skip_footer\": \"true\",\n                    \"maxBadRecords\": \"0\"\n                },\n                \"obs\": {\n                    \"gcp_project\": \"projectId\",\n                    \"sub_process\": \"beamx_testing_gcsToBq\",\n                    \"keyvalue\": \"NA\",\n                    \"project_name\": \"beamx\",\n                    \"source_type\": \"File\",\n                    \"source_name\": \"TEST_FILE_DELIMITE_1_*.DAT\",\n                    \"target_name\": \"projectId.beamx.beamx_testing_table_delimitedfile\",\n                    \"target_type\": \"Table\",\n                    \"tool_name\": \"GCP\",\n                    \"system_name\": \"beamx\",\n                    \"logger_name\": \"dof_gcp_process_log\",\n                    \"rerun_indicator\": \"NA\"\n                }\n            },\n            \"OkTo\": \"End\"\n        },\n        {\n            \"Name\": \"End\",\n            \"Id\": \"end\",\n            \"Description\": \"This stage indicates the ending point of the task relationship in the dag\",\n            \"OkTo\": \"end\"\n        }\n    ]\n}\n```",
+
+        "contexts": [
+
+            "DPF Code and Related artifacts The following repo holds the golden code for the data processing framework. https://gitlab.verizon.com/vz-data-engineering/data-processing-framework-v2 DPF code has cloud function which is heart of all operations can be invoked from main.py. The flow is like based on   mentioned in JSON metadata the corresponding template will be selected and based on task type particular operator/utility  Type will be created in the dag. Following are the artifacts of DPF code. Feature Description Template Utilities File to BQ Ingestion Single file Ingestion into BigQuery dag_template.html bq_loader.py File to BQ Ingestion Multi file Ingestion into BigQuery dag_template_multi_src_file.html bq_loader.py RDBMS To BQ  Ingestion Ingestion from Jdbc compliant systems to BigQuery dag_template_dataproc_jdbc_to_bq .html jdbc_to_bq_loader.py BQ to RDBMS  Ingestion BigQuery to Jdbc Ingestion dag_template_dataproc_bq_to_jdbc .html bq_to_jdbc_loader.py Stream Ingestion Kafka as source Ingesting into BigQuery dag_template_dataproc_kafka_to_b q.html kafka_to_bq_loader.py Egress BigQuery to GCS dag_template_with_ssh.html BQ_to_GCS.py Teradata Ingress Teradata native TPT solution for Ingestion of teradata data into BigQuery dag_template_dataproc_serverless _jdbc_to_bq.html tpt_bq_to_td_loader.py Teradata Egress Teradata native TPT solution for Ingestion of BigQuery table data into  Teradata dag_template_dataproc_serverless _bq_to_jdbc.html tpt_td_to_bq_loader.py Ingestion & Curation Ingestion along with curation followed in a single workflow dag_template_curation.html dag_template_ingestioncu ration.html SOI jobs egress pattern SOI specific job template as part of Egress dag_template_soi.html egressSOI.py Hybrid Engine Using Spark framework which can run onprem workloads on GCP dag_template_sparksubmit_hybrid. html dag_template_sparksubmi t_hybrid.html SSH capability Ability to interact & process Onprem system jobs dag_template_with_ssh.html SSH operator Curation Running ETL/ELT jobs based out of Sql compliant systems Common bq_transformer.py Inter Job dependency Handling dependencies between jobs Common dag_dependency.py Event based Ingestion /processing Ingestion/Processing based on event like file arrival Common event cloud function preprocessing cloud  function preprocessing cloud function Pre-processing udf_invokder custom cloud function custom cloud function Common custom_cloud_function Dynamic configuration Supporting to pass configuration parameters dynamically when you can  run your dag with own configuration Common inbuilt feature Alerting management  via Opsgenie Integration of Opsgenie alerts with all the feature patterns Common ops_genie.py,  ops_genie_yarn_alert.py Observability  Integration Integration of Observability framework with all feature patterns Common obserability.py Email Notification  subscription Enable email alerts for failures and invalid metadata Common email library DPF function name Purpose aid-gk1v-metadata-dag-function metadata parsing function which coverts JSON to dag py file in Airflow dpf-file-preprocessing pre-processing function used to handle corner cases of file ingestion ",
+
+            "Sample metadata json for single file insertion -  {     \"Name\": \"fixedwidth_skipfooter_TF\",     \"Type\": \"Batch\",     \"Start_Date\": \"datetime.now(tz) - timedelta(days=0)\",     \"Schedule_interval\": \"None\",     \"max_active_runs\": \"1\",     \"Catchup\": \"False\",     \"Project_space\": \"vz-it-k0mv-dpfdo-0\",     \"Timezone\": \"UTC\",     \"description\": \"The following DAG includes only Ingestion process\",     \"custom_tags\": [         \"app:thpt\",         \"schedule_type:daily\",         \"lob:wireless\",         \"sla:bau\",         \"job_type:inj\",         \"vsad:httv\",         \"data_domain:legacy\",         \"data_sub_domain:legacy\",         \"product_name:legacy\",         \"usecase_name:legacy\"     ],     \"Steps\": [         {             \"Name\": \"Start\",             \"Id\": \"start\",             \"Description\": \"This stage indicates the starting point of the task relationship in the dag\",             \"OkTo\": \"gcsToBq_bqHook\"         },         {             \"Name\": \"gcsToBq_bqHook\",             \"Id\": \"gcsToBq_bqHook\",             \"Description\": \"GCS to BQ Pre Staging load\",             \"Type\": \"load file from gcs\",             \"retries\": \"0\",             \"retryDelay\": \"minutes=1\",             \"Params\": {                 \"hook\": {                     \"sourceFormat\": \"dat\",                     \"datasetId\": \"db_beamx\",                     \"tableId\": \"dag_history_trg_6\",                     \"sourceUris\": \"testdoc5.dat\",                     \"fixedWidth\": \"True\",                     \"colSpecification\": \"2,5,2\",                     \"fieldDelimiter\": \",\",                     \"gcp_conn_id\": \"gcp_conn_id_k0mv-dpfdo\",                     \"projectId\": \"projectId\",                     \"skipLeadingRows\": \"0\",                     \"writeDisposition\": \"WRITE_TRUNCATE\",",
+
+            "\"archiveLocation\": \"pos\",                     \"createDisposition\": \"CREATE_NEVER\",                     \"recipient_email\": \"suryansh.singh@verizon.com\",                     \"allowQuotedNewlines\": \"false\",                     \"allowJaggedRows\": \"false\",                     \"encoding\": \"UTF-8\",                     \"ignoreUnknownValues\": \"false\",                     \"storeErrorDetails\": \"True\",                     \"skip_footer\": \"true\",                     \"maxBadRecords\": \"0\"                 },                 \"obs\": {                     \"gcp_project\": \"projectId\",                     \"sub_process\": \"beamx_testing_gcsToBq\",                     \"keyvalue\": \"NA\",                     \"project_name\": \"beamx\",                     \"source_type\": \"File\",                     \"source_name\": \"TEST_FILE_DELIMITE_1_*.DAT\",                     \"target_name\": \"projectId.beamx.beamx_testing_table_delimitedfile\",                     \"target_type\": \"Table\",                     \"tool_name\": \"GCP\",                     \"system_name\": \"beamx\",                     \"logger_name\": \"dof_gcp_process_log\",                     \"rerun_indicator\": \"NA\"                 }             },             \"OkTo\": \"End\"\n        },\n        {\n            \"Name\": \"End\",\n            \"Id\": \"end\",\n            \"Description\": \"This stage indicates the ending point of the task relationship in the dag\",\n            \"OkTo\": \"end\"\n        }\n    ]\n} Sample metadata json for bulk file ingestion -  {     \"Name\": \"optimization_bulk_csv_z_test_TF\",     \"Type\": \"Batch\",     \"Start_Date\": \"datetime.now() - timedelta(days=1)\",     \"Schedule_interval\": \"None\",     \"max_active_runs\": \"1\",     \"Catchup\": \"False\",     \"Timezone\": \"EST\",     \"Project_space\": \"vz-it-k0mv-dpfdo-0\",     \"custom_tags\": [         \"app:thpt\",         \"schedule_type:daily\",         \"lob:wireless\",",
+
+            "                                 0                                                                                                          1                                                  2                                       3                            Feature                                                                                                Description                                           Template                               Utilities               File to BQ Ingestion                                                                        Single file Ingestion into BigQuery                                  dag_template.html                            bq_loader.py               File to BQ Ingestion                                                                         Multi file Ingestion into BigQuery                   dag_template_multi_src_file.html                            bq_loader.py            RDBMS To BQ \\nIngestion                                                          Ingestion from Jdbc compliant systems to BigQuery            dag_template_dataproc_jdbc_to_bq\\n.html                    jdbc_to_bq_loader.py            BQ to RDBMS \\nIngestion                                                                                 BigQuery to Jdbc Ingestion            dag_template_dataproc_bq_to_jdbc\\n.html                    bq_to_jdbc_loader.py                   Stream Ingestion                                                                    Kafka as source Ingesting into BigQuery           dag_template_dataproc_kafka_to_b\\nq.html                   kafka_to_bq_loader.py                             Egress                                                                                            BigQuery to GCS                         dag_template_with_ssh.html                            BQ_to_GCS.py                   Teradata Ingress                                  Teradata native TPT solution for Ingestion of teradata data into BigQuery dag_template_dataproc_serverless\\n_jdbc_to_bq.html                  tpt_bq_to_td_loader.py                    Teradata Egress                          Teradata native TPT solution for Ingestion of BigQuery table data into \\nTeradata dag_template_dataproc_serverless\\n_bq_to_jdbc.html                  tpt_td_to_bq_loader.py               Ingestion & Curation                                                Ingestion along with curation followed in a single workflow                         dag_template_curation.html   dag_template_ingestioncu\\nration.html            SOI jobs egress pattern                                                                SOI specific job template as part of Egress                              dag_template_soi.html                            egressSOI.py                      Hybrid Engine                                                Using Spark framework which can run onprem workloads on GCP             dag_template_sparksubmit_hybrid.\\nhtml  dag_template_sparksubmi\\nt_hybrid.html                     SSH capability                                                           Ability to interact & process Onprem system jobs                         dag_template_with_ssh.html                            SSH operator                           Curation                                                    Running ETL/ELT jobs based out of Sql compliant systems                                             Common                       bq_transformer.py               Inter Job dependency                                                                         Handling dependencies between jobs                                             Common                       dag_dependency.py Event based Ingestion\\n/processing                                                      Ingestion/Processing based on event like file arrival                                             Common                    event cloud function     preprocessing cloud \\nfunction                                                                               preprocessing cloud function                                     Pre-processing                            udf_invokder              custom cloud function                                                                                      custom cloud function                                             Common                   custom_cloud_function              Dynamic configuration Supporting to pass configuration parameters dynamically when you can \\nrun your dag with own configuration                                             Common                         inbuilt feature Alerting management \\nvia Opsgenie                                               Integration of Opsgenie alerts with all the feature patterns                                             Common ops_genie.py, \\nops_genie_yarn_alert.py        Observability \\nIntegration                                           Integration of Observability framework with all feature patterns                                             Common                         obserability.py  Email Notification \\nsubscription                                                      Enable email alerts for failures and invalid metadata                                             Common                           email library",
+
+            "metadata json config table where all metadata JSON is captured in BigQuery at each project. vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_poc_tbls.dpf_metadata "
+
+        ],
+
+        "vegas_transaction_id": "f4cfbaab-36a3-457c-8b74-099b34e6550b"
+
+    },
+
+    "response_time_in_secs": 10.029,
+
+    "status_cde": 200,
+
+    "status_msg": "Success",
+
+    "timestamp": "2025-08-04 02:37:49 PM"
+
+}
+
+ 
+
+Step 2: Additional step integration in the json -
+
+append "run sql from file" step without obs json block in the above metadata before the END step and provide metadata json output ---> for insertion of data inside json from chatbot.
+
+
+
+sample payload for Step 2 -
+
+{
+
+"input": "append \"run sql from file\" step without obs json block in the above metadata before the END step and provide metadata json output",
+
+...
+
+}
+
+the response is in json format. We need to show the "response.answer" in the editor like before in normal json format with normal double quotes("Name": "fixedwidth_skipfooter_TF") but not \"\"(\"Name\": \"fixedwidth_skipfooter_TF\") using JSON.parse. Remove unwanted text from answer. The response should be in json format only.
+
+sample response for Step 2 should look like this -
+
+{
+
+    "response": {
+
+        "answer": "```json\n{\n    \"Name\": \"fixedwidth_skipfooter_TF\",\n    \"Type\": \"Batch\",\n    \"Start_Date\": \"datetime.now(tz) - timedelta(days=0)\",\n    \"Schedule_interval\": \"None\",\n    \"max_active_runs\": \"1\",\n    \"Catchup\": \"False\",\n    \"Project_space\": \"vz-it-k0mv-dpfdo-0\",\n    \"Timezone\": \"UTC\",\n    \"description\": \"The following DAG includes only Ingestion process\",\n    \"custom_tags\": [\n        \"app:thpt\",\n        \"schedule_type:daily\",\n        \"lob:wireless\",\n        \"sla:bau\",\n        \"job_type:inj\",\n        \"vsad:httv\",\n        \"data_domain:legacy\",\n        \"data_sub_domain:legacy\",\n        \"product_name:legacy\",\n        \"usecase_name:legacy\"\n    ],\n    \"Steps\": [\n        {\n            \"Name\": \"Start\",\n            \"Id\": \"start\",\n            \"Description\": \"This stage indicates the starting point of the task relationship in the dag\",\n            \"OkTo\": \"gcsToBq_bqHook\"\n        },\n        {\n            \"Name\": \"gcsToBq_bqHook\",\n            \"Id\": \"gcsToBq_bqHook\",\n            \"Description\": \"GCS to BQ Pre Staging load\",\n            \"Type\": \"load file from gcs\",\n            \"retries\": \"0\",\n            \"retryDelay\": \"minutes=1\",\n            \"Params\": {\n                \"hook\": {\n                    \"sourceFormat\": \"dat\",\n                    \"datasetId\": \"db_beamx\",\n                    \"tableId\": \"dag_history_trg_6\",\n                    \"sourceUris\": \"testdoc5.dat\",\n                    \"fixedWidth\": \"True\",\n                    \"colSpecification\": \"2,5,2\",\n                    \"fieldDelimiter\": \",\",\n                    \"gcp_conn_id\": \"gcp_conn_id_k0mv-dpfdo\",\n                    \"projectId\": \"projectId\",\n                    \"skipLeadingRows\": \"0\",\n                    \"writeDisposition\": \"WRITE_TRUNCATE\"\n                }\n            },\n            \"OkTo\": \"run_sql_query\"\n        },\n        {\n            \"Name\": \"run_sql_query\",\n            \"Id\": \"run_sql_query_id\",\n            \"Description\": \"Run SQL query from file\",\n            \"Type\": \"run sql query from file\",\n            \"Params\": {\n                \"hook\": {\n                    \"gcp_conn_id\": \"gcp_conn_id_k0mv-dpfdo\",\n                    \"sqlFile\": \"example.sql\",\n                    \"projectId\": \"projectId\",\n                    \"datasetId\": \"db_beamx\",\n                    \"tableId\": \"example_table\",\n                    \"useLegacySql\": \"false\",\n                    \"writeDisposition\": \"WRITE_APPEND\"\n                }\n            },\n            \"OkTo\": \"End\"\n        },\n        {\n            \"Name\": \"End\",\n            \"Id\": \"end\",\n            \"Description\": \"This stage indicates the ending point of the task relationship in the dag\",\n            \"OkTo\": \"End\"\n        }\n    ]\n}\n```",
+
+...
+
+}
+
+
+
+Step 3, Additional details -
+
+Some sample questions to ask the chatbot -
+
+what does skipLeadingRows mean in the context --> sample question
+
+what does writeDisposition mean in the context --> sample question
+
+
+
+we need to send the question as payload and get the response in normal text format.
+
+Here the both payload.input and response.answer are in string format only.
+
+sample payload for Step 3 -
+
+{
+
+    "input": "what does skipLeadingRows mean in the context",
+
+    ...
+
+}
+
+
+
+sample response for step 3 should look like this -
+
+{
+
+    "response": {
+
+        "answer": "Based on the provided contexts, `skipLeadingRows` refers to the number of leading rows to skip when processing a file. In the given examples, it is often set to \"0\", indicating that no leading rows are skipped.\n",
+
+        ...
+
+    },
+
+}
+
+
+
+Left side window - Code Editor Where Code Generation will happen with Agent -
+
+
+
+Prompt syntax : “// bmx: “
+
+Step 4 -
+
+
+
+And add more code on editor using inline comment starting with // bmx: -
+
+i) // bmx: please can you add gcs file sensor check here? --> sample comment
+
+ii) //bmx:please can you add skip_header and header_pattern here ? (Capability) -->sample comment
+
+We need to send the entire created json(whatever present in editor including comment(please can  you add gcs file sensor check here ?) but not //bmx:) as payload in the input field in doubly-stringified string format. Convert normal json into doubly-stringified string format in payload. Example payload for inline comment :
+
+sample payload for Step 4 -
+
+{
+
+"input": "{\n    \"Name\": \"sample_gcs_to_bq_dag\",\n    \"Type\": \"Batch\",\n    \"Start_Date\": \"datetime.now(tz) - timedelta(days=0)\",\n    \"Schedule_interval\": \"None\",\n    \"max_active_runs\": \"1\",\n    \"Catchup\": \"False\",\n    \"Project_space\": \"your_project_space\",\n    \"Timezone\": \"UTC\",\n    \"description\": \"DAG with Start, GCS to BQ load, and End steps\",\n    \"custom_labels\": [\n        \"app:example\",\n        \"schedule_type:adhoc\",\n        \"lob:example\",\n        \"sla:example\",\n        \"job_type:ingestion\",\n        \"vsad:example\",\n        \"data_domain:example\",\n        \"data_sub_domain:example\",\n        \"product_name:example\",\n        \"usecase_name:example\"\n    ],\n    \"Steps\": [\n        {\n            \"Name\": \"Start\",\n            \"Id\": \"start\",\n            \"Description\": \"This stage indicates the starting point of the task relationship in the dag\",\n            \"OkTo\": \"gcsToBq_bqHook\"\n        },\n    please can  you add gcs file sensor check here ? \n
+
+    {\n            \"Name\": \"gcsToBq_bqHook\",\n            \"Id\": \"gcsToBq_bqHook\",\n            \"Description\": \"GCS to BQ Pre Staging load\",\n            \"Type\": \"load file from gcs\",\n            \"retries\": \"0\",\n            \"retryDelay\": \"minutes=1\",\n            \"Params\": {\n                \"hook\": {\n                    \"sourceFormat\": \"dat\",\n                    \"datasetId\": \"your_dataset_id\",\n                    \"tableId\": \"your_table_id\",\n                    \"sourceUris\": \"your_file.dat\",\n                    \"fixedWidth\": \"True\",\n                    \"colSpecification\": \"2,5,2\",\n                    \"fieldDelimiter\": \",\",\n                    \"gcp_conn_id\": \"your_gcp_connection_id\",\n                    \"projectId\": \"your_project_id\",\n                    \"skipLeadingRows\": \"0\",\n                    \"skip_header\": \"1\",\n                    \"header_pattern\": \"your_regex_pattern\",\n                    \"writeDisposition\": \"WRITE_TRUNCATE\"\n                }\n            },\n            \"OkTo\": \"end\"\n        },\n        {\n            \"Name\": \"End\",\n            \"Id\": \"end\",\n            \"Description\": \"This stage indicates the ending point of the task relationship in the dag\"\n        }\n    ]\n}"
+
+...
+
+}
+
+
+
+sample response for step 4 -
+
+{
+
+    "response": {
+
+        "answer": "{\n    \"Name\": \"sample_gcs_to_bq_dag\",\n    \"Type\": \"Batch\",\n    \"Start_Date\": \"datetime.now(tz) - timedelta(days=0)\",\n    \"Schedule_interval\": \"None\",\n    \"max_active_runs\": \"1\",\n    \"Catchup\": \"False\",\n    \"Project_space\": \"your_project_space\",\n    \"Timezone\": \"UTC\",\n    \"description\": \"DAG with Start, GCS file sensor check, GCS to BQ load, and End steps\",\n    \"custom_tags\": [\n        \"app:example\",\n        \"schedule_type:adhoc\",\n        \"lob:example\",\n        \"sla:example\",\n        \"job_type:ingestion\",\n        \"vsad:example\",\n        \"data_domain:example\",\n        \"data_sub_domain:example\",\n        \"product_name:example\",\n        \"usecase_name:example\"\n    ],\n    \"Steps\": [\n        {\n            \"Name\": \"Start\",\n            \"Id\": \"start\",\n            \"Description\": \"This stage indicates the starting point of the task relationship in the dag\",\n            \"OkTo\": \"gcs_file_sensor\"\n        },\n        {\n            \"Name\": \"gcs_file_sensor\",\n            \"Id\": \"gcs_file_sensor\",\n            \"Description\": \"Checks for the presence of a file in GCS\",\n            \"Type\": \"gcs_file_sensor\",\n            \"retries\": \"0\",\n            \"retryDelay\": \"minutes=1\",\n            \"Params\": {\n                \"bucket\": \"your_bucket_name\",\n                \"object\": \"your_file.dat\",\n                \"gcp_conn_id\": \"your_gcp_connection_id\",\n                \"poke_interval\": \"60\"\n            },\n            \"OkTo\": \"gcsToBq_bqHook\"\n        },\n        {\n            \"Name\": \"gcsToBq_bqHook\",\n            \"Id\": \"gcsToBq_bqHook\",\n            \"Description\": \"GCS to BQ Pre Staging load\",\n            \"Type\": \"load file from gcs\",\n            \"retries\": \"0\",\n            \"retryDelay\": \"minutes=1\",\n            \"Params\": {\n                \"hook\": {\n                    \"sourceFormat\": \"dat\",\n                    \"datasetId\": \"your_dataset_id\",\n                    \"tableId\": \"your_table_id\",\n                    \"sourceUris\": \"your_file.dat\",\n                    \"fixedWidth\": \"True\",\n                    \"colSpecification\": \"2,5,2\",\n                    \"fieldDelimiter\": \",\",\n                    \"gcp_conn_id\": \"your_gcp_connection_id\",\n                    \"projectId\": \"your_project_id\",\n                    \"skipLeadingRows\": \"0\",\n                    \"skip_header\": \"true\",\n                    \"header_pattern\": \"Your Header Pattern\",\n                    \"writeDisposition\": \"WRITE_TRUNCATE\"\n                }\n            },\n            \"OkTo\": \"end\"\n        },\n        {\n            \"Name\": \"End\",\n            \"Id\": \"end\",\n            \"Description\": \"This stage indicates the ending point of the task relationship in the dag\"\n        }\n    ]\n}",
+
+        ...
+
+    }
+
+}
+
+
+
+
+
+Make this prompt more flexible and understandable to give to vs code copilot

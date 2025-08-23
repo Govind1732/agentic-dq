@@ -1,0 +1,114 @@
+(.venv) PS C:\projects\Data-Quality\agentic_dq\adq-python-script\scripts> python adq_agents.py sample_input.json
+2025-08-21 16:55:22.879 | INFO     | pyvegas.core.settings.loader:get_settings:254 - --- Initializing 'pyvegas' settings ---
+2025-08-21 16:55:22.880 | INFO     | pyvegas.core.settings.loader:_load_dotenv_file:119 - 🔸 No .env file found in CWD (C:\projects\Data-Quality\agentic_dq\adq-python-script\scripts). Will rely on OS variables, YAML files, and defaults.
+2025-08-21 16:55:22.880 | INFO     | pyvegas.core.settings.loader:_determine_environment:74 - Read 'ENVIRONMENT=test' from OS.
+2025-08-21 16:55:22.889 | INFO     | pyvegas.core.settings.yaml_loaders:_resolve_user_config_path:370 - No user configuration file found after checking all potential sources. Proceeding without user YAML configuration.
+2025-08-21 16:55:22.892 | SUCCESS  | pyvegas.core.settings.loader:get_settings:311 - ✅ 'pyvegas' Settings initialized successfully for environment: 'test' (took 0.013 seconds).
+2025-08-21 16:55:28.893 | INFO     | pyvegas.helpers.utils.proxy:set_proxy:43 - Using non-production proxy host: proxy.ebiz.verizon.com
+2025-08-21 16:55:28.894 | INFO     | pyvegas.helpers.utils.proxy:set_proxy:75 - Proxy settings applied successfully
+SUCCESS: pyvegas LLM initialized successfully with usecase: adq_agent_data_volume, context: adq_data_volume_context
+🔍 Reading input from file: sample_input.json
+Input: {
+  "failed_table": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg",
+  "failed_column": "port_out_cnt",
+  "db_type": "GCP",
+  "validation_query": "select activity_dt, FORMAT_DATE('%A', cast(activity_dt as date)) day_of_week, activity_cd, sum(port_in_cnt) as port_in, sum(winback_cnt) as winback, sum(rollback_cnt) as roll_back, sum(port_out_cnt) as port_out from vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg where activity_dt = '2025-07-06' group by 1,2,3 order by 3,2",
+  "execution_date": "2025-07-06",
+  "sd_threshold": 3,
+  "expected_std_dev": 377,
+  "expected_value": 11477,
+  "actual_value": 12584
+}
+
+============================================================
+🔍 ANOMALY IDENTIFIER NODE RESPONSE
+============================================================
+On July 6, 2025, the number of 'port out' events significantly deviated from the norm. The observed value was more than 3 standard deviations away from the expected value, indicating an unusual spike or drop in activity compared to the typical range.
+
+============================================================
+
+🤖 ADQ: On July 6, 2025, the number of 'port out' events significantly deviated from the norm. The observed value was more than 3 standard deviations away from the expected value, indicating an unusual spike or drop in activity compared to the typical range.
+
+
+============================================================
+🎯 ANALYSIS DECISION NODE RESPONSE
+============================================================
+Path to follow: Equality
+Decision: Based for provided inputs, proceeding with the failed column as the starting point for our root cause analysis.
+============================================================
+
+🤖 ADQ: Based for provided inputs, proceeding with the failed column as the starting point for our root cause analysis.
+🤖 ADQ: Performing the initial check on layer L0 to validate the databuck alert...
+246
+{"type": "NODE_STATUS", "nodeId": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg.port_out_cnt", "status": "checking", "message": "Starting validation for vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg.port_out_cnt"}
+🤖 ADQ:  Analysing the data on L0 layer for <b>port_out_cnt</b><br><br>
+                                    <b>Reasoning:</b> The query results contain a row where activity_dt is '2025-07-06' (represented as 1751760000000 in the JSON), day_of_week is 'Sunday', and activity_cd is 'PO'. The corresponding port_out value (port_out_cnt) is 3750. This value is outside the acceptable range of 10346 to 12608.<br><br>
+                                    <b>SQL query for actual value:</b><br>
+                                    <pre><code>select activity_dt, FORMAT_DATE('%A', cast(activity_dt as date)) day_of_week, activity_cd, sum(port_out_cnt) as port_out from vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg where activity_dt = '2025-07-06' group by 1,2,3 order by 3,2</code></pre><br>    
+                                    A significant deviation has been detected in the port_out_cnt column's values over the past month. A lineage trace is necessary to uncover the root cause.
+
+656
+{"type": "LINEAGE_TREE", "nodes": [{"id": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg.port_out_cnt", "table": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg", "column": "port_out_cnt", "status": "pending"}, {"id": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg.activity_cd", "table": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg", "column": "activity_cd", "status": "pending"}], "edges": [{"source": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg.activity_cd", "target": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg.port_out_cnt"}]}
+🤖 ADQ: Tracing back in the lineage to collect data acorss layers for analysis...
+256
+{"type": "NODE_STATUS", "nodeId": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg.activity_cd", "status": "checking", "message": "Analyzing predecessor vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg.activity_cd"}
+🤖 ADQ:  Traversing through lineage for <b>port_out_cnt</b><br><br>
+                                    <b>Layer Number:</b> 1<br><br>
+                                    <b>Table Name:</b> vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg<br><br>
+                                    <b>Column Name:</b> activity_cd<br><br>
+                                    <b>SQL query:</b><br>
+                                    <pre><code>SELECT
+    trans_dt,
+    FORMAT_DATE('%A', CAST(trans_dt AS DATE)) AS day_of_week,
+    activity_cd,
+    SUM(CASE WHEN activity_cd = 'PO' THEN 1 ELSE 0 END) AS port_out
+FROM
+    vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg
+WHERE
+    trans_dt = '2025-07-06'
+GROUP BY
+    1, 2, 3
+ORDER BY
+    3, 2</code></pre><br>
+
+
+============================================================
+🔄 TRACE BACKWARD STEP NODE RESPONSE
+============================================================
+Paths processed in this step: 1
+Remaining paths to process: 0
+  Step 0: vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg.port_out_cnt
+    Found 1 predecessor(s):
+      - vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg.activity_cd (Transform: CASE WHEN A.ACTIVITY_CD = 'PO' THEN 1 ELSE 0 END AS PORT_OUT_CNT)
+============================================================
+
+🤖 ADQ: Analyzing the results across layers to identify the Root cause...
+🤖 ADQ:  Analysis of data transfromation from <b>vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg.activity_cd</b> to <b>vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg.port_out_cnt</b><br><br>
+                                    <b>Data Match Status:</b> MISMATCH<br><br>
+                                    <b>Inference:</b> L0's port_out for activity_cd 'PO' is 3750, while L1's port_out is 1250. The transformation logic doesn't account for this difference. The difference is significant, exceeding the 1% threshold.<br><br>
+
+
+============================================================
+📈 ANALYZE RESULTS NODE RESPONSE
+============================================================
+Overall Summary: Discrepancies or possible discrepancies detected across data lineage. Investigate 'MISMATCH' or 'POSSIBLE_MISMATCH' statuses in details.     
+Final Summary: Root Cause Analysis completed. Discrepancies or possible discrepancies detected across data lineage. Investigate 'MISMATCH' or 'POSSIBLE_MISMATCH' statuses in details.
+
+Detailed Analysis Results:
+
+Table: vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg
+  Column: port_out_cnt
+    From: vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cust_acct_line_trans_adg.activity_cd (Step 1)
+    To: vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg.port_out_cnt (Step 0)
+    Transformation: CASE WHEN A.ACTIVITY_CD = 'PO' THEN 1 ELSE 0 END AS PORT_OUT_CNT
+    Match Status: MISMATCH
+    Inference: L0's port_out for activity_cd 'PO' is 3750, while L1's port_out is 1250. The transformation logic doesn't account for this difference. The difference is significant, exceeding the 1% threshold.
+    ---
+============================================================
+
+
+🎉 ROOT CAUSE ANALYSIS COMPLETED!
+============================================================
+Final Summary: Root Cause Analysis completed.
+============================================================
+(.venv) PS C:\projects\Data-Quality\agentic_dq\adq-python-script\scripts> 

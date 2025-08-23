@@ -1,0 +1,82 @@
+Of course. Here is a set of detailed, step-by-step prompts you can use to guide a developer or an AI assistant like Copilot in building the entire "Agentic DQ" application, from the backend logic to the conversational frontend.
+
+***
+
+### **Prompt 1: High-Level Project Goal & Architecture**
+
+**Goal:** Build a full-stack "Agentic Data Quality (ADQ)" application. The application will allow a user to submit a data quality issue through a conversational chatbot. An AI-powered backend will then perform a Root Cause Analysis (RCA) and stream its step-by-step progress back to the user in real-time.
+
+**Architecture:**
+1.  **React Frontend:** A single-page application with a two-panel layout. The right panel will be a chatbot for user interaction. The left panel will display the real-time progress of the AI's analysis.
+2.  **Node.js Backend:** A server that acts as an orchestrator. It will manage WebSocket connections with the React frontend and execute the Python analysis script.
+3.  **Python Backend:** A script that contains a team of AI "agents" built with `LangGraph`. This script will perform the core RCA logic by interacting with Google BigQuery and a Large Language Model (LLM).
+
+---
+
+### **Prompt 2: Building the Python RCA Engine (`adq_agents.py`)**
+
+**Goal:** Create the core Python script that performs the Root Cause Analysis. This script will be executed by the Node.js server and must communicate its progress by printing structured JSON messages to the console.
+
+**Instructions:**
+
+1.  **Set up the LangGraph State Machine:**
+    * Define a `RootCauseAnalysisState` `TypedDict` to hold all the data that will be passed between agents (e.g., `failed_table`, `validation_query`, `trace_data`).
+    * Create a `StateGraph` and define the nodes for each step of the analysis: `anamoly_identifier`, `analysis_decision`, `parse_dq_query`, `initialize_trace`, `trace_backward_step`, and `analyze_results`.
+
+2.  **Implement the Communication Protocol:**
+    * Create a function `send_update(title, type, content)` that takes a title, a type (`message`, `sql`, `json`, `graph`, `summary`), and content, formats them into a JSON object, and prints the JSON string to the standard output. This will be the only way the script sends information back to the Node.js server.
+
+3.  **Develop the Agent Functions (Nodes):**
+    * **`anamoly_identifier_node`:** This function will be the entry point. It must be able to accept both a structured JSON object and a natural language text string as input.
+        * If the input is text, it must use the LLM to parse it and convert it into the required structured JSON format.
+        * It should then send its first update: `send_update("Acknowledgement", "message", "I got your issue. Let me start analyzing the data...")`.
+    * **`analysis_decision_node`:** This agent will analyze the complexity of the `validation_query` to decide whether to trace a single column or multiple columns.
+    * **`initialize_trace_node`:** This agent will perform the initial statistical analysis on the final table (Layer 0). It should send updates explaining what it's doing, for example: `send_update("Deviation Check", "message", "Looking for deviations in the record count...")`. After its analysis, it should send another message with the result: `send_update("Deviation Analysis", "message", "Deviation persists. Proceeding with trend analysis.")`.
+    * **`trace_backward_step_node`:** This is the core detective agent. When it begins the lineage trace, it must first send the entire lineage graph structure using `send_update("Lineage Graph", "graph", { "nodes": [...], "edges": [...] })`. Then, for each column it investigates, it should send a series of messages explaining its actions, such as "Identified the sms_cnt column originated from...", "I'm running the count checks...", and "The deviation originates from...".
+    * **`analyze_results_node`:** This agent will compile the final summary of the investigation and send it as the last message: `send_update("Final Summary", "summary", "The root cause is...")`.
+
+4.  **Handle Command-Line Execution:**
+    * The script must be runnable from the command line, accepting the initial user input (either JSON or text) as a single string argument.
+
+---
+
+### **Prompt 3: Building the Node.js Orchestrator (`server.js`)**
+
+**Goal:** Create a Node.js server that connects the React frontend and the Python backend.
+
+**Instructions:**
+
+1.  **Initialize the Project:** Set up an Express server and install `cors`, `socket.io`, and `python-shell`.
+2.  **Set up the WebSocket Server:** Create a `socket.io` instance that listens for connections from the React application.
+3.  **Create an API Endpoint:** Create a POST endpoint at `/api/start-rca`.
+4.  **Implement the Orchestration Logic:**
+    * When the `/api/start-rca` endpoint is called, it should use `python-shell` to execute the `adq_agents.py` script, passing the user's message as a command-line argument.
+    * The server must listen to the standard output of the Python script in real-time.
+    * As each JSON message is received from the Python script, the Node.js server must parse it and immediately emit it over the WebSocket to the connected React client. Use the `type` field from the JSON to determine the WebSocket event name (e.g., `'process_step'`, `'lineage_graph'`, `'final_summary'`).
+
+---
+
+### **Prompt 4: Building the React Frontend**
+
+**Goal:** Create the two-panel user interface with a chatbot and a real-time progress visualizer.
+
+**Instructions:**
+
+1.  **Initialize the Project:** Set up a new React project using Vite and install `socket.io-client`.
+2.  **Create the Main Layout (`App.jsx`):**
+    * The `App` component should establish and manage the WebSocket connection.
+    * It should have a two-panel layout using Flexbox.
+    * It needs to manage the application's state, including `chatHistory` and `processSteps`.
+
+3.  **Create the `Chatbot` Component (Right Panel):**
+    * This component will display the `chatHistory` in a conversational format (user messages on the right, bot messages on the left).
+    * It will have an input form for the user to send messages. When a message is sent, it should be sent to the Node.js API endpoint.
+
+4.  **Create the `ProcessFlow` Component (Left Panel):**
+    * This component will listen for WebSocket events from the Node.js server.
+    * It must be able to render different types of content based on the `type` of the message received:
+        * **`'message'`:** Display as a simple text block.
+        * **`'sql'`:** Display in a formatted code block with syntax highlighting.
+        * **`'json'`:** Display in a formatted, collapsible JSON viewer.
+        * **`'graph'`:** Render the lineage graph using a library like `react-flow`.
+    * As new steps are received, they should be added to the bottom of the view, creating a real-time log of the AI's actions.

@@ -1,0 +1,109 @@
+bot: Hi John Doe, great to see you 👋
+I can quickly find the root cause of your data issues using AI-driven analysis.
+Describe your issue, e.g.:
+“I see low volumes of netadds on dla_sum_fact”
+Share an issue details similar to this:
+{
+   "table_name" : <Fully qualified table name>,
+   "column_name" : <Column name>,
+   "db_type" : <GCP/Teradata>,
+   "failed_rule": <SQL that contains the validation>,
+   "threshold of Z-Score" :
+   "expected_SD" :
+   "expected_value" :
+   "actual_value" :
+   "Start Date":
+   "End Date":
+ }
+
+user: Please investigate a deviation in 'zero-usage cycles' on the rev_sum_fact_bl dataset. Confirm if the deviation is legitimate and, if so, determine the root cause of this anomaly.
+or 
+user: {
+    "failed_table": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg",
+    "failed_column": "port_out_cnt",
+    "db_type": "GCP",
+    "validation_query": "select activity_dt, FORMAT_DATE('%A', cast(activity_dt as date)) day_of_week, activity_cd, sum(port_in_cnt) as port_in, sum(winback_cnt) as winback, sum(rollback_cnt) as roll_back, sum(port_out_cnt) as port_out from vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.port_sum_fact_adg where activity_dt = '2025-07-06' group by 1,2,3 order by 3,2",
+    "execution_date" : "2025-07-06",
+    "sd_threshold": 3,
+    "expected_std_dev": 377,
+    "expected_value": 11477,
+    "actual_value": 12584
+}
+
+bot: I got your issue.
+Let me start analyzing the data to identify the root cause
+Checking the rules that are involved in this column which still persists are not
+...
+1
+✅
+Found Validation Rule for zero-usage cycles within the rev_sum_fact_bl dataset.
+SELECT insert_dt, 
+                     SUM(zero_usage_cycle) AS zero_usage 
+FROM(SELECT CAST(hdp_insert_dt_time AS DATE) AS insert_dt, CASE WHEN sms_cnt < 10 AND mms_cnt < 10 THEN 1 ELSE 0 END AS zero_usage_cycle 
+FROM vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.rev_sum_fact_bl_adg 
+WHERE CAST(hdp_insert_dt_time AS DATE) = CURRENT_DATE -1) 
+GROUP BY 1
+🔎
+Looking for deviations in the record count where SMS & MMS < 10 in rev_sum_fact_bl
+📊
+Deviation persists
+The number of rows with fewer SMS & MMS counts is lesser than expected. Proceeding with trend analysis
+2
+Analysing historical trends
+Performing the statistical trend analysis on rev_sum_fact_bl
+...
+Analyzing historical patterns for SMS & MMS counts
+...
+Checking current Vs. History
+...
+Finding 3SD from the history and see if the current count is within the 
+3SD from the historical average
+...
+✅
+Found there is a deviation
+📈
+Deviation confirmed
+The deviation confirmed for both SMS & MMS counts on rev_sum_fact_bl as per the historical trend analysis.
+3
+Checking for upstream dependencies based on data lineage
+rev_sum_fact_bl
+zero_usage
+rev_sum_fact_bl
+sms_cnt
+mms_cnt
+cycle_usage
+cycle_usage
+usg_call_cnt
+usg_call_cnt
+i. Checking for SMS Count
+Vision
+✅
+Identified the sms_cnt column orginated from usage_col_cnt column from cycle_usage table.
+raw file ingestion
+I’m running the count checks for the previous date
+...
+🔎
+Results: The deviation in sms_cnt < 10 originates from the usg_call_cnt column in the ‘cycle_usage’ table, indicating an issue at this earlier stage.
+ii. Checking for MMS Count
+✅
+Identified the mms_cnt column orginated from usage_col_cnt column from cycle_usage table.
+I’m running the count checks for the previous date
+...
+🔎
+Results: The deviation in mms_cnt < 10 originates from the usg_call_cnt column in the ‘cycle_usage’ table, indicating an issue at this earlier stage.
+No further upstream tables are involved in the lineage for sms_cnt or mms_cnt. Therefore, the analysis concludes here.
+Final Root Cause Summary
+usg_call_cnt column in the cycle_usage table values has deviated from it’s historical trend. This directly affected both sms_cnt and mms_cnt in the downstream table (rev_sum_fact_bl).
+
+Was this helpful?
+👍
+👎
+
+👍
+You have liked it!
+
+Thank you for your feedback.
+Would you like to:
+Generate Summary Report
+Start New Issue
+Export Trace

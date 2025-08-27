@@ -94,11 +94,17 @@ try:
 except Exception as e:
     print(f"ERROR: pyvegas initialization failed: {e}")
     print("CRITICAL: Cannot proceed without pyvegas LLM")
-    # Send error to frontend and exit
-    def send_delimited_message_fallback(message_dict):
-        """Fallback function for sending delimited messages during initialization"""
+    # Send error to frontend and exit using unified messaging
+    def send_message_fallback(message_type: str, content: str = "", title: str = "", **kwargs):
+        """Fallback function for sending messages during initialization"""
         try:
-            json_message = json.dumps(message_dict, ensure_ascii=False)
+            message = {
+                "title": title,
+                "type": message_type,
+                "content": content,
+                "timestamp": datetime.now().isoformat()
+            }
+            json_message = json.dumps(message, ensure_ascii=False)
             message_bytes = json_message.encode('utf-8')
             message_length = len(message_bytes)
             
@@ -110,18 +116,9 @@ except Exception as e:
         except Exception as e:
             # Final fallback to basic print
             print(f"ERROR: Failed to send delimited message: {e}", file=sys.stderr)
-            print(json.dumps(message_dict), flush=True)
+            print(json.dumps(message), flush=True)
     
-    def send_update(title, update_type, content):
-        """Send structured updates to the Node.js server via stdout"""
-        update = {
-            "title": title,
-            "type": update_type,
-            "content": content,
-            "timestamp": datetime.now().isoformat()
-        }
-        send_delimited_message_fallback(update)
-    send_update("Initialization Error", "error", f"Failed to initialize pyvegas LLM: {str(e)}")
+    send_message_fallback("error", f"Failed to initialize pyvegas LLM: {str(e)}", "Initialization Error")
     sys.exit(1)
 
 json_parser = JsonOutputParser()
@@ -133,218 +130,167 @@ class RootCauseAnalysisState(TypedDict):
     validation_query : str
     expected_value : float
     expected_std_dev : float
+    actual_value : float
     sd_threshold : float
     initial_check_result : Optional[Dict]
     parsed_dq_info : Dict[str, Any]
-    trace_data : Optional[Dict] 
+    trace_data : Optional[Dict[str, Dict[str, List[Dict]]]] # Enriched trace data structure
     paths_to_process: Optional[List[Tuple[int, str, str, str]]]
+    mismatched_nodes: Optional[List[Dict[str, Any]]] # Stores only nodes with discrepancies
     analysis_results: Optional[Dict[str, Any]]
     agent_input: str
     anamoly_node_response: str
+    loaded_lineage_graphs : Optional[Dict[str, nx.DiGraph]]
 
 # Global variable to track if we're running in web mode
 WEB_MODE = True  # Set to True for web mode by default
 
-def send_delimited_message(message_dict):
-    """Send a length-prefixed JSON message to Node.js for reliable parsing"""
-    try:
-        json_message = json.dumps(message_dict, ensure_ascii=False)
-        message_bytes = json_message.encode('utf-8')
-        message_length = len(message_bytes)
-        
-        # Send length prefix followed by newline, then the message
-        sys.stdout.buffer.write(f"{message_length}\n".encode('utf-8'))
-        sys.stdout.buffer.write(message_bytes)
-        sys.stdout.buffer.write(b"\n")
-        sys.stdout.buffer.flush()
-    except Exception as e:
-        # Fallback to basic print if there's an issue with delimited messaging
-        print(f"ERROR: Failed to send delimited message: {e}", file=sys.stderr)
-        print(json.dumps(message_dict), flush=True)
-
-def send_update(title, update_type, content):
-    """Send structured updates to the Node.js server via stdout"""
-    update = {
-        "title": title,
-        "type": update_type,
-        "content": content,
-        "timestamp": datetime.now().isoformat()
-    }
-    send_delimited_message(update)
-    sys.stdout.flush()
-
-def send_node_status_update(table_name: str, column_name: str, status: str, message: str = ""):
+def send_message(message_type: str, content: str = "", title: str = "", data: dict = None, **kwargs):
     """
-    Send a node status update to the frontend for lineage tree visualization.
+    Unified message sender for all communication from Python to Node.js
+    Sends plain text JSON messages (one per line) for reliable parsing.
     
     Args:
-        table_name: The name of the table
-        column_name: The name of the column
-        status: One of 'checking', 'completed_success', 'completed_failure'
-        message: Optional status message
+        message_type: Type of message ('update', 'step_result', 'node_status', 'lineage_tree', 'error', 'node_response')
+        content: Main message content
+        title: Message title (optional)
+        data: Additional data payload (optional)
+        **kwargs: Additional message-specific parameters
     """
-    # Use the same node ID format as lineage tree
-    node_id = f"{table_name}.{column_name}"
-    
-    # Map internal status to frontend status for React Flow
-    status_mapping = {
-        'checking': 'checking',
-        'completed_success': 'match', 
-        'completed_failure': 'mismatch'
-    }
-    
-    frontend_status = status_mapping.get(status, status)
-    
-    status_data = {
-        "type": "NODE_STATUS",
-        "nodeId": node_id,
-        "status": frontend_status,
-        "message": message,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    if WEB_MODE:
-        send_delimited_message(status_data)
-    else:
-        print(f"📊 NODE STATUS: {node_id} -> {frontend_status}")
-        if message:
-            print(f"   Message: {message}")
-    
-    logger.info(f"Node status update: {node_id} -> {frontend_status}")
+    if not WEB_MODE:
+        # Console mode - just print for debugging
+        if message_type == "step_result":
+            step_number = kwargs.get('step_number', 0)
+            print(f"\n{'='*60}")
+            print(f"STEP {step_number}: {title}")
+            print(f"{'='*60}")
+            print(content)
+            if data:
+                print(f"Data: {data}")
+            print(f"{'='*60}\n")
+        elif message_type == "node_status":
+            node_id = kwargs.get('node_id', '')
+            status = kwargs.get('status', '')
+            print(f"📊 NODE STATUS: {node_id} -> {status}")
+            if content:
+                print(f"   Message: {content}")
+        elif message_type == "node_response":
+            node_name = kwargs.get('node_name', '')
+            print(f"🔗 NODE RESPONSE: {node_name}")
+            print(f"   {content}")
+        else:
+            print(f"🤖 {title}: {content}")
+        return
 
-def emit_function_update(function_name, status="active", return_data=None, message=None, agent_type="function"):
-    """Emit function call information for web mode"""
-    if WEB_MODE:
-        flow_data = {
-            "stepId": function_name.lower().replace('_', '-'),
-            "status": status,
-            "data": return_data,
-            "message": message,
-            "type": agent_type,
-            "timestamp": datetime.now().isoformat()
-        }
-        flow_update_message = {
-            "type": "FLOW_UPDATE",
-            "data": flow_data
-        }
-        send_delimited_message(flow_update_message)
-
-def emit_agent_activity(agent_name, action, status="active", data=None):
-    """Emit specialized agent activity"""
-    emit_function_update(
-        f"{agent_name.lower().replace(' ', '-')}-agent",
-        status=status,
-        return_data=data,
-        message=f"{agent_name}: {action}",
-        agent_type="agent"
-    )
-
-def display_message(role: str, content: str):
-    """Display message function that works in both web and console modes"""
-    global WEB_MODE
-    
-    if WEB_MODE:
-        # Web mode - send structured conversational message
-        if role == "bot":
-            send_conversational_message(content, "bot_message")
-        elif role == "user":
-            send_conversational_message(content, "user_message")
-    else:
-        # Console mode - just print (fallback)
-        if role == "bot":
-            print(f"{BOT_AVATAR} {CHATBOT_NAME}: {content}")
-        elif role == "user":
-            print(f"{USER_AVATAR} User: {content}")
-
-def send_step_message(step_number: int, emoji: str, title: str, content: str, message_type: str = "step"):
-    """Send a numbered step message in the conversational flow"""
+    # Web mode - send structured message to Node.js
     message = {
-        "step": step_number,
-        "emoji": emoji,
-        "title": title,
-        "content": content,
-        "type": message_type,
         "timestamp": datetime.now().isoformat()
     }
-    send_delimited_message(message)
+    
+    if message_type == "update":
+        message.update({
+            "title": title,
+            "type": "update", 
+            "content": content
+        })
+        
+    elif message_type == "step_result":
+        step_number = kwargs.get('step_number', 0)
+        message.update({
+            "title": f"Step {step_number}: {title}",
+            "type": "step_result",
+            "content": content,
+            "step_number": step_number,
+            "data": data or {}
+        })
+        
+    elif message_type == "node_response":
+        # Real-time node response for immediate feedback
+        node_name = kwargs.get('node_name', title)
+        message.update({
+            "title": title or f"{node_name} Complete",
+            "type": "node_response",
+            "content": content,
+            "node_name": node_name,
+            "data": data or {}
+        })
+        
+    elif message_type == "node_status":
+        node_id = kwargs.get('node_id', '')
+        status = kwargs.get('status', '')
+        # Map internal status to frontend status
+        status_mapping = {
+            'checking': 'checking',
+            'completed_success': 'match', 
+            'completed_failure': 'mismatch'
+        }
+        frontend_status = status_mapping.get(status, status)
+        
+        message.update({
+            "type": "NODE_STATUS",
+            "nodeId": node_id,
+            "status": frontend_status,
+            "message": content
+        })
+        
+    elif message_type == "lineage_tree":
+        message.update({
+            "type": "LINEAGE_TREE",
+            "nodes": kwargs.get('nodes', []),
+            "edges": kwargs.get('edges', [])
+        })
+        
+    elif message_type == "error":
+        message.update({
+            "title": title or "Error",
+            "type": "error",
+            "content": content
+        })
+    
+    # Send plain text JSON message (one message per line)
+    try:
+        json_message = json.dumps(message, ensure_ascii=False)
+        # print(json_message, flush=True)
+    except Exception as e:
+        # Fallback error handling
+        print(f"ERROR: Failed to send message: {e}", file=sys.stderr)
+        print(json.dumps({"type": "error", "content": str(e), "timestamp": datetime.now().isoformat()}), flush=True)
 
-def send_conversational_message(content: str, message_type: str = "message", step: int = None, title: str = None):
-    """Send a conversational message to the frontend"""
-    message = {
-        "content": content,
-        "type": message_type,
-        "timestamp": datetime.now().isoformat()
-    }
-    if step is not None:
-        message["step"] = step
-    if title:
-        message["title"] = title
-    send_delimited_message(message)
+# Legacy compatibility wrappers - all now use unified send_message()
+# def send_update(title, update_type, content):
+#     """Legacy compatibility wrapper - use send_message() instead"""
+#     send_message("update", content, title)
 
-def send_initial_bot_introduction():
-    """Send initial bot introduction as shown in Figma"""
-    intro_message = {
-        "type": "bot_introduction",
-        "content": "Hello! I'm your Data Quality Assistant. I can help you identify and resolve data quality issues by tracing through your data lineage.",
-        "sample_input": {
-            "failed_table": "revenue_summary_fact",
-            "failed_column": "total_revenue", 
-            "validation_query": "SELECT COUNT(*) as validation_result FROM revenue_summary_fact WHERE total_revenue < 0 AND business_date = '2024-01-15'",
-            "expected_value": 0,
-            "expected_std_dev": 0,
-            "sd_threshold": 3
-        },
-        "timestamp": datetime.now().isoformat()
-    }
-    send_delimited_message(intro_message)
+# def send_step_result(step_number, step_title, content, data=None):
+#     """Legacy compatibility wrapper - use send_message() instead"""
+#     send_message("step_result", content, step_title, data, step_number=step_number)
 
-def send_acknowledgment():
-    """Send acknowledgment message as shown in Figma"""
-    send_conversational_message(
-        "Got it! I'll help you analyze this data quality issue. Let me start by examining your data step by step.",
-        "acknowledgment"
-    )
+# def send_node_status_update(table_name, column_name, status, message=""):
+#     """Legacy compatibility wrapper - use send_message() instead"""
+#     send_message("node_status", message, node_id=f"{table_name}.{column_name}", status=status)
 
-def send_step_1_analysis():
-    """Send Step 1: Data Quality Issue Analysis"""
-    send_step_message(1, "🔍", "Data Quality Issue Analysis", 
-                     "I'm analyzing your data quality validation to understand what went wrong.")
+# def send_delimited_message(message_dict):
+#     """Legacy compatibility wrapper - use send_message() instead"""
+#     msg_type = message_dict.get("type", "update")
+#     title = message_dict.get("title", "")
+#     content = message_dict.get("content", "")
+    
+#     if msg_type == "LINEAGE_TREE":
+#         send_message("lineage_tree", nodes=message_dict.get("nodes", []), edges=message_dict.get("edges", []))
+#     elif msg_type == "NODE_STATUS":
+#         send_message("node_status", message_dict.get("message", ""), 
+#                     node_id=message_dict.get("nodeId", ""), status=message_dict.get("status", ""))
+#     else:
+#         send_message(msg_type.lower() if msg_type else "update", content, title)
 
-def send_step_2_investigation():
-    """Send Step 2: Detailed Investigation"""
-    send_step_message(2, "🕵️", "Detailed Investigation", 
-                     "Now I'm diving deeper to identify which specific data points are causing the issue.")
-
-def send_step_3_lineage():
-    """Send Step 3: Upstream Dependencies"""
-    send_step_message(3, "🔗", "Upstream Dependencies", 
-                     "Tracing the data lineage to find the root cause in upstream systems.")
-
-def send_final_root_cause_summary(root_cause_info):
-    """Send Final Root Cause Summary"""
-    summary_message = {
-        "type": "root_cause_summary",
-        "title": "🎯 Root Cause Analysis Complete",
-        "content": "Here's what I found:",
-        "root_cause": root_cause_info,
-        "timestamp": datetime.now().isoformat()
-    }
-    send_delimited_message(summary_message)
-
-def send_feedback_and_extensions():
-    """Send feedback request and extension options"""
-    feedback_message = {
-        "type": "feedback_and_extensions",
-        "content": "Was this analysis helpful?",
-        "feedback_options": ["👍 Yes, very helpful", "👎 Needs improvement"],
-        "extension_questions": [
-            "Can you show me the fix recommendations?",
-            "What are the historical trends for this metric?",
-            "How can I prevent this issue in the future?"
-        ],
-        "timestamp": datetime.now().isoformat()
-    }
-    send_delimited_message(feedback_message)
+# def display_message(role, content):
+#     """Legacy compatibility wrapper - suppressed in web mode for cleaner 3-step workflow"""
+#     # Suppressed in web mode - only key step results are sent
+#     if not WEB_MODE:
+#         if role == "bot":
+#             print(f"{BOT_AVATAR} {CHATBOT_NAME}: {content}")
+#         elif role == "user":
+#             print(f"{USER_AVATAR} User: {content}")
 
                 
 def isTokenExpired(path):
@@ -388,16 +334,13 @@ def exchange_and_save_oidc_token_for_jwt(client_id:str, client_secret:str) -> No
         raise e
 
 def bigquery_execute(query: str) -> pd.DataFrame:
-    """Execute BigQuery query and return results as DataFrame"""
     #clientid and secret should be vaulted
     client_id = CLIENT_ID
     client_secret = CLIENT_SECRET
     project_id = PROJECT_ID
-    
     # get a jwt
     if isTokenExpired(OIDC_TOKEN_PATH):
         exchange_and_save_oidc_token_for_jwt(client_id=client_id,client_secret=client_secret)
-    
     # set the GOOGLE_APPLICATION_ENVIRONMENT
     logger.info('Setting environment variable...')
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = SA_PATH
@@ -414,9 +357,29 @@ def bigquery_execute(query: str) -> pd.DataFrame:
         error_message = f"Error executing BigQuery query: {e}"
         logger.error(error_message)
         # Send error to frontend instead of returning error string
-        send_update("BigQuery Error", "error", error_message)
+        send_message("error", error_message, "BigQuery Error")
         raise Exception(error_message)
 
+def extract_metric_from_output(df_json, sql_query) -> Optional[float]:
+    """Safely extracts the first numeric value from a query output."""
+    actual_value_prompt = f"""You are a precise data extraction bot. Your task is to analyze a JSON dataset and extract a single numeric value. 
+                            **Dataset (JSON):**\n```json\n{df_json}\n``` 
+                            **SQL Query that generated the data:**\n```sql\n{sql_query}\n``` 
+                            **Instructions:** 
+                            1. **Identify the Metric Column:** From the SQL query, determine the name of the primary metric column (e.g., the result of a SUM, COUNT). 
+                            2. **Return the Value:** Return **only the numeric value** from that specific cell. Do not include any other text. **Example Output:**\n1234.56"""
+                            
+    try:
+        response = llm.invoke(actual_value_prompt).content.strip()
+        match = re.search(r"[-+]?\d*\d\.?\d+", response)
+        if match:
+            return float(match.group(0))
+        else:
+            logger.info(f"LLM didnt return the actual value:{response}")
+            return 0
+    except:
+        logger.error("Failed to get actual value")
+        return None
 
 def get_predecessor_info(node_name: str, lineage_graph: nx.DiGraph) -> List[Dict[str, str]]:
     """
@@ -424,142 +387,129 @@ def get_predecessor_info(node_name: str, lineage_graph: nx.DiGraph) -> List[Dict
     A node name is expected in 'table.column' format.
     """
     predecessors_list = []
+
+    # In a DiGraph from lineage, successors of a node are its upstream sources.
     for pred_node in lineage_graph.successors(node_name):
-        # The edge from pred_node to node_name describes the transformation
+        # The edge from node_name to pred_node describes the transformation
         transformation = lineage_graph.edges[node_name, pred_node].get('transformation', 'N/A')
         predecessors_list.append({
             'prev_table': pred_node.rsplit('.', 1)[0],
             'prev_column': pred_node.rsplit('.', 1)[1],
             'transformation': transformation,
-            'source_node_full_name': pred_node # To help construct next_paths_to_process
+            'source_node_full_name': pred_node
         })
+
     return predecessors_list
 
 def replace_technical_date_with_business_date(sql_query : str, table_name : str):
     logger.info('Updating the Query technical dates with business dates')
+    
+    print("Query before replacing business date : ", sql_query)
+    
     date_df = pd.read_csv(RULES_CSV_PATH)
-    prompt = f"""
-            Analyze the following SQL query and identify all column names that likely represent date or timestamp values.
-            Consider common naming conventions (e.g., 'last_upd_dt',  'event_dt')
-            and SQL data types if implied by the column usage.
-
-            Return the result as a Python list of strings. Do not include any explanations.
-            If no date columns are found, return an empty list.
-            List only columns thata are available as table columns, don't consider aliases as a seperate column names.
-
-            SQL Query:
-            ```sql
-            {sql_query}
-            ```
-            Example Output Format:
-            ["column_name_1"]
-            """
-
     row = date_df[date_df['BQ Table Name'].str.lower() == table_name.lower()]
-
-    llm_tech_date = llm.invoke(prompt).content
-
-    # Add null-safety check
-    if not llm_tech_date:
-        logger.warning("LLM returned empty response for date column identification")
-        return sql_query
-
-    # print(llm_tech_date)
-    match = re.search(r"```python\n(.*?)\n```", llm_tech_date, re.DOTALL | re.IGNORECASE)
-
-    if match:
-        llm_tech_date = match.group(1).strip()
     
-    try:
-        technical_date_cols = ast.literal_eval(llm_tech_date)
-    except (ValueError, SyntaxError) as e:
-        logger.warning(f"Failed to parse LLM date response: {e}. Using empty list.")
-        technical_date_cols = []
-
-    if len(technical_date_cols) == 0 or row.empty:
+    if row.empty:
         return sql_query
-
-    business_date_col = row['Business date'].values[0]
-
-    # print('llm_tech_date', type(technical_date_cols))
-    def replacer(match):
-        prefix = match.group(1) if match.group(1) else ''
+    else:
+        business_date = row['Business date'].values[0]
+        print("table and column name",table_name, business_date)
         
-        return f"{prefix}{business_date_col}"
-    
-    for technical_date_col in technical_date_cols:
-        pattern = rf'(\b\w+\.)?{technical_date_col}\b'
+        business_date_prompt = f"""You are an expert SQL refactoring assistant. Your task is to analyze an incoming SQL query and replace any technical date-related column names with a specified "business date" column name. You must be very careful to only change the column name and NOT the date values or any other part of the query.
 
-        sql_query = re.sub(pattern, replacer, sql_query, flags=re.IGNORECASE)
-    return sql_query
+                                **Your Instructions:**
+                                1.  **Analyze the SQL Query:** Carefully examine the provided SQL query.
+                                2.  **Identify the Target Table:** Your modifications should only apply to columns belonging to the specified `target_table_name`.
+                                3.  **Find the Technical Date Column:** Identify the column name in the query that is being used as a date filter or for date-based grouping. These columns often end in `_dt`, `_date`, or similar suffixes (e.g., `activity_dt`, `event_date`, `trans_date`).
+                                4.  **Replace the Column Name:** Replace all occurrences of the identified technical date column with the provided `business_date_column_name`.
+                                    *   This includes occurrences in the `WHERE` clause, `SELECT` clause, `GROUP BY` clause, and any subqueries.
+                                    *   If the column is prefixed with a table alias (e.g., `t1.activity_dt` or `t1.hdp_insert_dt_time`), make sure to preserve the alias (e.g., `t1.business_processing_date`).
+                                5.  **DO NOT CHANGE DATE VALUES:** It is critical that you do not alter the actual date literals or timestamp strings in the query (e.g., `'2024-07-15'`, `CAST('2025-01-01' AS DATE)`). Only the column *name* should change.
+                           
+                                **Context for this Task:**
+                                *   **Input SQL Query:**
+                                    ```sql
+                                    {sql_query}
+                                    ```
+                                *   **Target Table Name:** `{table_name}`
+                                *   **Business Date Column Name to use:** `{business_date}`
+
+                                **Example 1:**
+                                *   **Input SQL Query:** `SELECT SUM(sales) FROM my_sales_table WHERE sales_dt = '2024-05-20' GROUP BY product_id;`
+                                *   **Target Table Name:** `my_sales_table`
+                                *   **Business Date Column Name:** `business_day`
+                                *   **Expected Output SQL:** `SELECT SUM(sales) FROM my_sales_table WHERE business_day = '2024-05-20' GROUP BY product_id;`
+
+                                **Example 2 (with alias):**
+                                *   **Input SQL Query:** `SELECT t1.customer_id, COUNT(*) FROM fact_sessions t1 WHERE t1.session_start_dt BETWEEN '2024-01-01' AND '2024-01-31' GROUP BY t1.customer_id;`
+                                *   **Target Table Name:** `fact_sessions`
+                                *   **Business Date Column Name:** `session_business_date`
+                                *   **Expected Output SQL:** `SELECT t1.customer_id, COUNT(*) FROM fact_sessions t1 WHERE t1.session_business_date BETWEEN '2024-01-01' AND '2024-01-31' GROUP BY t1.customer_id;`
+                   
+                                **Example 3 (what to AVOID):**
+                                *   **Input SQL Query:** `... WHERE activity_dt = '2023-11-10' ...`
+                                *   **Business Date Column Name:** `business_date`
+                                *   **WRONG Output:** `... WHERE business_date = 'business_date' ...` (The date value was incorrectly changed)
+                                *   **CORRECT Output:** `... WHERE business_date = '2023-11-10' ...`
+
+                                **Your Final Output:**
+                                Return only the complete, modified SQL query. Do not add any explanations, markdown formatting, or introductory text."""
+        
+        raw_sql_query = llm.invoke(business_date_prompt).content
+        sql_query = extract_sql_from_text(raw_sql_query)
+        print("Query after replacing business date : ", sql_query)
+        return sql_query
 
 def extract_sql_from_text(text: str) -> str:
     """Extracts the SQL query from the LLM response."""
-    if not text:
-        logger.warning("Empty text provided to extract_sql_from_text")
-        return ""
-        
     match = re.search(r"```sql\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
     if match:
         sql_query = match.group(1).strip()
-        # print(f"Extracted SQL: {sql_query}")
         return sql_query
     else:
         match_cte = re.search(r"(WITH\s+[\s\S]+?SELECT[\s\S]*?;)", text, re.IGNORECASE | re.MULTILINE)
         if match_cte:
             query = match_cte.group(1).strip()
             return query
-    
-    # If no SQL found, return empty string
-    logger.warning(f"No SQL found in text: {text[:100]}...")
-    return ""
+    return text # Return original text if no SQL found
 
 def anamoly_identifier_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
-    # Send acknowledgment and start Step 1
-    send_acknowledgment()
-    send_step_1_analysis()
-    
     user_input = state
-    prompt = f"""
-                        Analyze the data quality validation results and provide a clear, business-friendly summary.
-                        
-                        Focus on:
-                        - What type of data quality issue occurred
-                        - When it happened (date/time if available)
-                        - The expected vs actual behavior
-                        - Impact in simple business terms
-                        
-                        Keep the language simple and avoid technical jargon.
-                       
-                        Validation metadata:
-                        {user_input} 
+    prompt = f"""You are a data validation assistant. Your task is to analyze validation results and generate clear, concise, and professional summaries for data quality issues based on provided metadata.
+                Your response must:
+                - State the anomaly clearly, identifying the affected table, column, and date.
+                - Explain the deviation: "The actual value of [actual_value] fell outside the expected range of [expected_value] +/- [sd_threshold] standard deviations."
+                - Use human-readable language suitable for business and data stakeholders.
+                - Avoid technical jargon, SQL queries, or recommendations.
+                - The summary should be a single, focused paragraph.
+
+                Summarize the following validation failure metadata:
+                {user_input}
                         """
-    logger.info('Analyzing the data quality issue.')
-    parser_chain = llm 
-    response = parser_chain.invoke(prompt).content
+    logger.info('Summarizing the inputs recieved.')
+
+    response = llm.invoke(prompt).content
     failed_rule = user_input["validation_query"]
-    
-    # Send the analysis result as part of Step 1
-    send_conversational_message(response, "analysis_result")
     
     # Print to console for command-line testing
     if not WEB_MODE:
         print(f"\n{'='*60}")
-        print("🔍 STEP 1: DATA QUALITY ISSUE ANALYSIS")
+        print("🔍 ANOMALY IDENTIFIER NODE RESPONSE")
         print(f"{'='*60}")
         print(response)
         print(f"{'='*60}\n")
     
-    return {"anamoly_node_response": response, "validation_query": failed_rule}
-			
-def analysis_decision_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
-    send_step_2_investigation()
+    # Send real-time node response for immediate frontend feedback
+    send_message("node_response", response, "Anomaly Analysis Complete", 
+                node_name="anomaly_identifier")
     
+    return {"anamoly_node_response": response, "validation_query": failed_rule}
+
+def analysis_decision_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     decider_prompt = f"""As an expert SQL analyst, your task is to determine how columns in a data quality validation query contribute to metrics.
                     Analyze the provided SQL query to identify if:
                     1.  **Each column contributes to a distinct validation metric. In this case, the `path_to_follow` is "Equality".
                     2.  **Multiple columns contribute to a single, combined validation metric** (e.g.,calculation involving several columns for one data quality check). In this case, the `path_to_follow` is "Statistical".
-
                     SQL Query to Analyze:
                     ```sql
                     {state['validation_query']}
@@ -571,55 +521,37 @@ def analysis_decision_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                     ```
                     Respond only with JSON.
                     """
-    response_str = llm.invoke(decider_prompt)
-    content = response_str.content
-    
-    # Extract JSON from markdown code blocks if present
-    import re
-    json_match = re.search(r"```json\n(.*?)\n```", content, re.DOTALL | re.IGNORECASE)
-    if json_match:
-        content = json_match.group(1).strip()
-    
-    try:
-        analysis_method = json.loads(content)
-    except json.JSONDecodeError as e:
-        error_msg = f"Failed to parse LLM response for analysis decision: {e}. Response: {content}"
-        logger.error(error_msg)
-        send_conversational_message(error_msg, "error")
-        raise Exception(error_msg)
-    
-    logger.info('Deciding the path.')
-    logger.info('Analysis Type : ', analysis_method)
-    
+
+    response_str = llm.invoke(decider_prompt).content
+    analysis_method = json_parser.invoke(response_str) # Make sure json_parser is defined
+    logger.info(f'Deciding the path. Analysis Type : {analysis_method}')
     decision_message = ""
     if analysis_method['path_to_follow'] == "Equality":
-        decision_message = f"I can see this is a direct column issue. I'll trace back through the data lineage starting from your failed column to find where the problem originated."
+        decision_message = f"Based for provided inputs, proceeding with the failed column as the starting point for our root cause analysis."
     else:
-        decision_message = f"This involves multiple columns working together. I need to run statistical checks to identify which specific column is causing the problem before tracing back."
-    
-    # Send the investigation result as part of Step 2
-    send_conversational_message(decision_message, "investigation_result")
+        decision_message = f"Based for provided inputs, multiple columns are involved in this validation metric, we'll run a statistical check at the L0 layer to pinpoint the problematic column."
     
     # Print to console for command-line testing
     if not WEB_MODE:
         print(f"\n{'='*60}")
-        print("🕵️ STEP 2: DETAILED INVESTIGATION")
+        print("🎯 ANALYSIS DECISION NODE RESPONSE")
         print(f"{'='*60}")
         print(f"Path to follow: {analysis_method['path_to_follow']}")
         print(f"Decision: {decision_message}")
         print(f"{'='*60}\n")
     
+    # Send real-time node response for immediate frontend feedback
+    send_message("node_response", decision_message, "Analysis Path Determined", 
+                node_name="analysis_decision", 
+                data={"path_to_follow": analysis_method['path_to_follow']})
+    
     return {'analysis_method' : analysis_method['path_to_follow']}
-	
-	
+
 def parse_dq_query_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     """
     Parses the user's DQ SQL query using an LLM to extract key components.
     """
-    send_step_message(6, "🔍", "Query Analysis", "Now I'm going to dissect your validation query like a surgeon! 🔬 Let me break it down into its key components - tables, columns, filters, and aggregation functions. This will help me understand exactly what data we're working with.")
-    
     validation_query = state['validation_query']
-    
     prompt = f"""
             You are a SQL expert. Analyze the following data quality validation SQL query.
             **Extraction Rules:**
@@ -662,59 +594,19 @@ def parse_dq_query_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
             }}
             Be precise in extracting filters and group by clauses exactly as they appear if possible, or describe them if complex.
             """
-
     logger.info("Parsing DQ query...")
+    parser_chain = llm | json_parser
+    parsed_info = parser_chain.invoke(prompt)
     try:
         del os.environ['http_proxy']
         del os.environ['https_proxy']
         del os.environ['no_proxy']
     except:
         pass
-
-    parser_chain = llm
-    response = parser_chain.invoke(prompt)
-    content = response.content
-    
-    # Extract JSON from markdown code blocks if present
-    import re
-    json_match = re.search(r"```json\n(.*?)\n```", content, re.DOTALL | re.IGNORECASE)
-    if json_match:
-        content = json_match.group(1).strip()
-    
-    try:
-        parsed_info = json.loads(content)
-    except json.JSONDecodeError as e:
-        error_msg = f"Failed to parse LLM response for DQ query parsing: {e}. Response: {content}"
-        logger.error(error_msg)
-        send_conversational_message(error_msg, "error")
-        raise Exception(error_msg)
-        
     logger.info(f"Parsed DQ Info: {parsed_info}")
-    
-    # Ensure parsed_info is directly the dictionary expected, not nested
+
     if 'parsed_dq_info' in parsed_info and isinstance(parsed_info['parsed_dq_info'], dict):
         parsed_info = parsed_info['parsed_dq_info']
-
-    # Send the parsed information with step number
-    send_step_message(7, "📋", "Query Components Identified", 
-                     "Excellent! I've successfully parsed your query and identified all the key components. Here's what I found:")
-    
-    # Create a human-readable summary
-    tables_list = list(parsed_info.get('target_tables', {}).keys())
-    columns_count = sum(len(cols) for cols in parsed_info.get('target_tables', {}).values())
-    
-    summary_message = f"🎯 **Analysis Summary:**\n"
-    summary_message += f"• **Tables involved:** {', '.join(tables_list)}\n"
-    summary_message += f"• **Columns being validated:** {columns_count} column(s)\n"
-    summary_message += f"• **Aggregation function:** {parsed_info.get('aggregation_function', 'None')}\n"
-    summary_message += f"• **Filters applied:** {len(parsed_info.get('filters', []))} filter(s)\n"
-    summary_message += f"• **Group by clauses:** {len(parsed_info.get('group_by', []))} clause(s)"
-    
-    send_conversational_message(summary_message, "info")
-    
-    # Display parsed info as formatted JSON for technical details
-    send_conversational_message("Here are the technical details:", "info")
-    send_conversational_message(json.dumps(parsed_info, indent=2), "code")
 
     # Print to console for command-line testing
     if not WEB_MODE:
@@ -724,41 +616,50 @@ def parse_dq_query_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
         print(json.dumps(parsed_info, indent=2))
         print(f"{'='*60}\n")
 
+    # Send real-time node response for immediate frontend feedback
+    parsed_summary = f"Successfully parsed validation query and extracted:\n"
+    parsed_summary += f"• {len(parsed_info.get('target_tables', {}))} target table(s)\n"
+    for table, columns in parsed_info.get('target_tables', {}).items():
+        table_short = table.split('.')[-1] if '.' in table else table
+        parsed_summary += f"  - {table_short}: {', '.join(columns)}\n"
+    parsed_summary += f"• {len(parsed_info.get('filters', []))} filter condition(s)\n"
+    parsed_summary += f"• {len(parsed_info.get('group_by', []))} grouping column(s)\n"
+    parsed_summary += f"• Aggregation function: {parsed_info.get('aggregation_function', 'none')}"
+    
+    send_message("node_response", parsed_summary, "Query Parsing Complete", 
+                node_name="parse_dq_query", 
+                data=parsed_info)
+
     return {"parsed_dq_info": parsed_info}
-	
+
 def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     """
-    Initializes the trace for each target table and column identified.
-    Executes the first SQL query (L0 layer) based on the parsed info.
-    Sets up the initial paths to process for backward tracing.
+    Initializes the trace, performs the L0 statistical check, and formats the result
+    into the new enriched trace_data structure.
     """
-    send_step_3_lineage()
 
+    # display_message('bot', "Identifying the columns that required root cause analysis...")  # Suppressed in web mode
     parsed_info = state['parsed_dq_info']
     trace_data = {}
     paths_to_process = []
-    result = {}
-
+    mismatched_nodes = []
+    loaded_graphs = {}
+    
     if not parsed_info or 'target_tables' not in parsed_info or not parsed_info['target_tables']:
         logger.info("No tables found in parsed DQ info. Cannot initialize trace.")
-        return {"trace_data": trace_data, "paths_to_process": paths_to_process}
+        return {"trace_data": {}, "paths_to_process": [], "mismatched_nodes": []}
 
     filters = parsed_info.get('filters', [])
     group_by = parsed_info.get('group_by', [])
     aggregation = parsed_info.get('aggregation_function', '')
-    result = {}
-    
+
     for table, columns in parsed_info['target_tables'].items():
         if table not in trace_data:
             trace_data[table] = {}
-            result[table] = {}
-            
         for column in columns:
             # Send status update that we are checking this node
-            send_node_status_update(table, column, "checking", f"Initializing trace for {table}.{column}")
-            
-            send_conversational_message(f"🎯 **Now examining column:** `{column}` from table `{table}`", "progress")
-            send_conversational_message(f"Let me create a specialized query to check if this column is behaving as expected...", "info")
+            send_message("node_status", f"Initializing trace for {table}.{column}", 
+                        node_id=f"{table}.{column}", status="checking")
             
             l0_sql_prompt = f"""
             Generate a SQL query for table '{table}' that selects the column '{column}' (and potentially other relevant columns like group_by columns or IDs)
@@ -785,19 +686,18 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
             except:
                 pass
 
-            l0_query_response = llm.invoke(l0_sql_prompt).content
-
-            l0_query = extract_sql_from_text(l0_query_response)
-            l0_query = replace_technical_date_with_business_date(l0_query, table.rsplit('.')[-1])
+            l0_query = extract_sql_from_text(llm.invoke(l0_sql_prompt).content)
+            l0_query = replace_technical_date_with_business_date(l0_query, table.rsplit('.', 1)[-1])
+            l0_output_df = bigquery_execute(l0_query) # Make sure bigquery_execute is defined
+            actual_value = extract_metric_from_output(l0_output_df.to_json(orient='records'), l0_query)
             
-            send_conversational_message(f"✅ **Query generated successfully!** Here's what I created to analyze `{column}`:", "info")
-            send_conversational_message(f"```sql\n{l0_query}\n```", "code")
+            # Send node response for L0 query generation
+            send_message("node_response", 
+                        f"Generated L0 analysis query for {table.split('.')[-1]}.{column}", 
+                        "L0 Query Generated", 
+                        node_name="initialize_trace",
+                        data={"query": l0_query[:200] + "..." if len(l0_query) > 200 else l0_query})
             
-            send_conversational_message(f"⚡ **Executing query...** Let me run this against your data warehouse.", "progress")
-            l0_output_df = bigquery_execute(l0_query)
-            l0_output = l0_output_df.to_json(orient='records')
-            
-            send_conversational_message(f"📊 **Current data retrieved!** Now I need to compare this against historical patterns to see if it's abnormal.", "info")
 
             std_dev_prompt = f"""Generate a SQL query to calculate the standard deviation on column '{column}' from the previous date mentioned in the SQL query {l0_query}. 
                                 The expected value and standard deviation should be calculated using data from the **last 30 days**, including the previous date. 
@@ -812,118 +712,75 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                                 - The standard deviation and expected value should be calculated using data from the 30 days prior to the date specified in the SQL query.  
                                 """
 
-            std_dev_response = llm.invoke(std_dev_prompt).content
-            std_dev_sql = extract_sql_from_text(std_dev_response)
+            std_dev_sql = extract_sql_from_text(llm.invoke(std_dev_prompt).content)
             
-            send_conversational_message(f"📈 **Historical Analysis Query for {column}:**", "info")
-            send_conversational_message(f"I'm looking at the last 30 days of data to establish a baseline...", "progress")
-            send_conversational_message(f"```sql\n{std_dev_sql}\n```", "code")
+            # Send node response for statistical analysis
+            send_message("node_response", 
+                        f"Calculated statistical baseline for {table.split('.')[-1]}.{column} using 30-day historical data", 
+                        "Statistical Analysis Complete", 
+                        node_name="initialize_trace")
             
             std_dev_df = bigquery_execute(std_dev_sql)
 
-            expected_std_dev = float(std_dev_df['std_dev'].values[0])
-            expected_value = float(std_dev_df['expected_value'].values[0])
+            expected_std_dev = float(std_dev_df['std_dev'].iloc[0]) if not std_dev_df.empty else 0.0
+            expected_value = float(std_dev_df['expected_value'].iloc[0]) if not std_dev_df.empty else 0.0
 
-            upper_bound = 3 * expected_std_dev + expected_value
-            lower_bound = 3 * expected_std_dev - expected_value
-            
-            prompt = f"""
-                            You are an analytical AI assistant for data quality monitoring. Your task is to analyze the result of a SQL query and determine if it has violated a predefined threshold.
-                            Here is the context of the data quality failure:
-                            - Failed Metric Column: "{state['failed_column']}"
+            lower_bound = expected_value - (3 * expected_std_dev)
+            upper_bound = expected_value + (3 * expected_std_dev)
 
-                            Here is the SQL query that was run to get the current value:
-                            ```sql
-                            {l0_query}
-                            ```
-                            Here is the full JSON output from the SQL query:
-                            ```json
-                            {l0_output}
-                            ```
-                            Here is the acceptable range (threshold) for the failed metric:
-                            - Lower Bound: {lower_bound}
-                            - Upper Bound: {upper_bound}
+            is_out_of_bounds = not (lower_bound <= actual_value <= upper_bound) if actual_value is not None else True
 
-                            **Your Instructions:**
-                            1. From the JSON output, identify the specific row that matches the "Context of Failure".
-                            2. From that row, extract the numeric value from the "Failed Metric Column"
-                            3. Compare this extracted value against the provided threshold.
-                            4. Is the value for the failed group within the specified threshold?
+            reasoning = (f"Value {actual_value:.2f} is outside the 3-sigma range [{lower_bound:.2f}, {upper_bound:.2f}]."
+                         if is_out_of_bounds else f"Value {actual_value:.2f} is within the expected statistical range.")
 
-                            **Provide your response in the following JSON format ONLY:**
-                            {{
-                                "comparison_result": "within_bounds" or "out_of_bounds",
-                                "identified_value": <the numeric value you extracted>,
-                                "reasoning": "A brief explanation of which row you chose, what value you found, and how it compares to the threshold."
-                            }}
-                    """
+            l0_trace_entry = {
+                "step_num": 0, "table_name": table, "column_name": column,
+                "sql_query": l0_query, "transformation_from_prev": "Initial Anomaly",
+                "check_type": "statistical_trend_check", "actual_value": actual_value,
+                "historical_expected_value": expected_value, "historical_std_dev": expected_std_dev,
+                "lower_bound": lower_bound, "upper_bound": upper_bound,
+                "is_mismatch": is_out_of_bounds, "mismatch_reason": reasoning
+            }
 
-            # 4. Call the LLM and parse the structured response
-            llm_response_str = llm.invoke(prompt)
-            try:
-                response_content = llm_response_str.content
-                
-                # Extract JSON from markdown code blocks if present
-                import re
-                json_match = re.search(r"```json\n(.*?)\n```", response_content, re.DOTALL | re.IGNORECASE)
-                if json_match:
-                    response_content = json_match.group(1).strip()
-                
-                parsed_llm_response = json.loads(response_content)
-            except Exception as e:
-                error_msg = f"Failed to parse LLM output for initial check: {e}. Output was: {llm_response_str}"
-                logger.error(error_msg)
-                send_conversational_message(error_msg, "error")
-                raise Exception(error_msg)
-
-            # 5. Populate the state with the LLM's findings
-            is_out_of_bounds = parsed_llm_response.get('comparison_result') == 'out_of_bounds'
-            result[table][column] = [{
-                                "is_out_of_bounds": is_out_of_bounds,
-                                "actual_value": parsed_llm_response.get('identified_value'),
-                                "lower_bound": lower_bound,
-                                "upper_bound": upper_bound,
-                                "message": parsed_llm_response.get('reasoning'),
-                                "l0_validation_query" : l0_query
-                            }]
-
-            trace_data[table][column] = [{
-                    "step_num": 0,
-                    "table_name": table,
-                    "column_name": column,
-                    "sql_query": l0_query,
-                    "sql_output": l0_output,
-                    "transformation_from_prev": None
-                }]
+            trace_data[table][column] = [l0_trace_entry]
 
             if is_out_of_bounds:
                 l0_key = f"{table}.{column}"
                 paths_to_process.append((0, table, column, l0_key))
+                mismatched_nodes.append({"from_node": "External Alert", "to_node": l0_key, "details": l0_trace_entry})
+                lineage_table_name = table.rsplit('.', 1)[-1]
+                graph_file_path = f"{lineage_graphs}/{lineage_table_name}.{column}.gexf"
+                # graph_file_path = f"lineage_graphs/{l0_key.replace(':','_')}.gexf"
+                try:
+                    lineage_graph = nx.read_gexf(graph_file_path)
+                    loaded_graphs[l0_key] = lineage_graph
+                    logger.info(f"Successfully loaded lineage graph for '{l0_key}' from {graph_file_path}")
+                except:
+                    logger.info(f"Error in loading lineage graph for '{l0_key}' from {graph_file_path}")
 
-                # Send completed failure status for columns that are out of bounds and need tracing
-                send_node_status_update(table, column, "completed_failure", f"Anomaly detected in {table}.{column}")
-                
-                send_conversational_message(f"🚨 **BINGO! Found the culprit!** 🚨", "warning")
-                send_conversational_message(f"Column `{column}` is definitely behaving abnormally. Here's what I found:", "warning")
-                send_conversational_message(f"📊 **Details:**\n{parsed_llm_response.get('reasoning')}", "info")
-                send_conversational_message(f"🔍 **Next Step:** I'll now trace this column backwards through its data lineage to find the root cause. Let's follow the data trail!", "progress")
+                # display_message("bot", f""" Analysing the data on L0 layer for <b>{column}</b><br><br>
+                #                         <b>Reasoning:</b> {parsed_llm_response.get('reasoning')}<br><br>
+                #                         <b>SQL query for actual value:</b><br>
+                #                         <pre><code>{l0_query}</code></pre><br>
+                #                         <b>SQL query for SD and EV:</b><br>
+                #                         <pre><code>{std_dev_sql}</code></pre><br>
+                #                         A significant deviation has been detected in the {column} column's values over the past month. A lineage trace is necessary to uncover the root cause.
+                #                         """)  # Suppressed in web mode
                 
             else:
                 # Send completed success status for columns that are within bounds
-                send_node_status_update(table, column, "completed_success", f"Analysis complete for {table}.{column}")
+                send_message("node_status", f"Analysis complete for {table}.{column}", 
+                           node_id=f"{table}.{column}", status="completed_success")
 
-                send_conversational_message(f"✅ **{column} within bounds:**\n\n**Reasoning:** {parsed_llm_response.get('reasoning')}\n\n**Result:** No lineage tracing necessary for this column.", "success")
+                # display_message("bot", f"""Analysing the data on L0 layer for <b>{column}</b><br><br>
+                #                         <b>Reasoning:</b> {parsed_llm_response.get('reasoning')}<br><br>
+                #                         <b>SQL query for actual value:</b><br>
+                #                         <pre><code>{l0_query}</code></pre><br>
+                #                         <b>SQL query for SD and EV:</b><br>
+                #                         <pre><code>{std_dev_sql}</code></pre><br>
+                #                         The data in column <b>{column}</b> falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary.
+                #                         """)  # Suppressed in web mode
     
-    # Build and send the full lineage tree for the paths we need to process
-    if paths_to_process:
-        # Temporarily set paths_to_process in state for lineage tree building
-        temp_state = state.copy()
-        temp_state['paths_to_process'] = paths_to_process
-        build_and_send_lineage_tree(temp_state)
-        
-        send_step_message(11, "🔗", "Lineage Analysis Starting", 
-                         f"Identified {len(paths_to_process)} column(s) requiring lineage trace. Starting upstream dependency analysis...")
-
     # Print to console for command-line testing
     if not WEB_MODE:
         print(f"\n{'='*60}")
@@ -941,749 +798,652 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                     print(f"    Actual: {check_result['actual_value']}, Range: [{check_result['lower_bound']:.2f}, {check_result['upper_bound']:.2f}]")
         print(f"{'='*60}\n")
                 
-    logger.info(f"Initialized trace for {len(paths_to_process)} target column paths.")
+    logger.info(f"Initialized trace for {len(paths_to_process)} paths.")
+    return {"trace_data": trace_data, "paths_to_process": paths_to_process, "mismatched_nodes": mismatched_nodes, "loaded_lineage_graphs" : loaded_graphs}
+    
+    # Send Step 1 result: Initial Anomaly Validation & Trend Analysis
+    if WEB_MODE:
+        step1_content = f"✅ Validation rule parsed and statistical analysis completed.\n\n"
+        step1_content += f"📊 Found {len(paths_to_process)} column(s) requiring root cause analysis:\n"
+        
+        for _, table, column, _ in paths_to_process:
+            table_short = table.split('.')[-1]
+            step1_content += f"• **{table_short}.{column}**\n"
+            
+        step1_content += f"\n🔍 Statistical trend analysis confirmed significant deviation (>3 standard deviations) from historical baseline."
+        
+        step1_data = {
+            "columns_analyzed": len(paths_to_process),
+            "problematic_columns": [{"table": table.split('.')[-1], "column": column} for _, table, column, _ in paths_to_process],
+            "validation_rule": state.get('validation_query', ''),
+            "threshold_type": "3_standard_deviations"
+        }
+        
+        send_message("step_result", step1_content, "Initial Anomaly Validation & Trend Analysis", 
+                    data=step1_data, step_number=1)
+    
     return {"initial_check_result": result, "trace_data": trace_data, "paths_to_process": paths_to_process}
 	
 def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]:
     """
-    Executes the validation query, then uses an LLM to find the relevant row and
-    check if the failed value is outside the 3*SD threshold.
+    Performs the initial check for a single-column failure and formats the result
+    into the new enriched trace_data structure.
     """
-    send_step_message(8, "🔬", "L0 Validation", "Performing initial validation check on L0 layer...")
-
-    logger.info("Performing initial check against threshold using LLM...")
-
+    # display_message('bot', "Performing initial check on L0 to validate the alert...")
     validation_query = state['validation_query']
     failed_column = state['failed_column']
     failed_table = state['failed_table']
-    paths_to_process = []
     
     # Send status update that we are checking this node
-    send_node_status_update(failed_table, failed_column, "checking", f"Starting validation for {failed_table}.{failed_column}")
+    send_message("node_status", f"Starting validation for {failed_table}.{failed_column}", 
+                node_id=f"{failed_table}.{failed_column}", status="checking")
 
     prompt = f"""Extract a SQL query from the provided "Validation SQL Query." The new query should:
-                * Select only the column `{failed_column}` (retaining its original aggregation or case statement or thresholds, if any) and all other **non-aggregated** columns from the original `SELECT` clause.
+                * Select only the column `{failed_column}` (retaining its original aggregation or case statement) and all other **non-aggregated** columns from the original `SELECT` clause.
                 * Preserve all original `WHERE`, `GROUP BY`, and `ORDER BY` clauses.
-
                 Validation SQL Query:
                 ```sql
                 {validation_query}"""
-    
     response = llm.invoke(prompt).content
-    if not response:
-        logger.error("LLM returned empty response for initial check query extraction")
-        return {"analysis_status": "error", "message": "Failed to get response from LLM"}
-    
     individual_query = extract_sql_from_text(response)
-    individual_query = replace_technical_date_with_business_date(individual_query, failed_table.rsplit('.')[-1])
-    
-    send_conversational_message(f"**Generated SQL Query:**\n```sql\n{individual_query}\n```", "code")
-    
-    query_output = bigquery_execute(individual_query)
+    individual_query = replace_technical_date_with_business_date(individual_query, failed_table.rsplit('.', 1)[-1])
+    query_output_df = bigquery_execute(individual_query)
+    actual_value = extract_metric_from_output(query_output_df.to_json(orient='records'), individual_query)
 
-    # 2. Calculate threshold
     sd_threshold = state['sd_threshold']
     ev = state['expected_value']
     sd = state['expected_std_dev']
     lower_bound = ev - (sd_threshold * sd)
     upper_bound = ev + (sd_threshold * sd)
 
-    send_conversational_message(f"**Threshold Analysis:**\n- Expected Value: {ev:.2f}\n- Standard Deviation: {sd:.2f}\n- Range: [{lower_bound:.2f}, {upper_bound:.2f}]", "info")
+    is_out_of_bounds = not (lower_bound <= actual_value <= upper_bound) if actual_value is not None else True
 
-    # 3. Construct a prompt for the LLM to perform the analysis
-    query_output_json = query_output.to_json(orient='records')
-
-    prompt = f"""
-            You are an analytical AI assistant for data quality monitoring. Your task is to analyze the result of a SQL query and determine if it has violated a predefined threshold.
-            Here is the context of the data quality failure:
-            - Failed Metric Column: "{state['failed_column']}"
-
-            Here is the SQL query that was run to get the current value:
-            ```sql
-            {individual_query}
-            ```
-            Here is the full JSON output from the SQL query:
-            ```json
-            {query_output_json}
-            ```
-            Here is the acceptable range (threshold) for the failed metric:
-            - Lower Bound: {lower_bound}
-            - Upper Bound: {upper_bound}
-
-            **Your Instructions:**
-            1. From the JSON output, identify the specific row that matches the "Context of Failure".
-            2. From that row, extract the numeric value from the "Failed Metric Column"
-            3. Compare this extracted value against the provided threshold.
-            4. Is the value for the failed group within the specified threshold?
-
-            **Provide your response in the following JSON format ONLY:**
-            {{
-                "comparison_result": "within_bounds" or "out_of_bounds",
-                "identified_value": <the numeric value you extracted>,
-                "reasoning": "A brief explanation of which row you chose, what value you found, and how it compares to the threshold."
-            }}
-    """
-
-    # 4. Call the LLM and parse the structured response
-    llm_response_str = llm.invoke(prompt)
-    try:
-        response_content = llm_response_str.content
-        
-        # Extract JSON from markdown code blocks if present
-        import re
-        json_match = re.search(r"```json\n(.*?)\n```", response_content, re.DOTALL | re.IGNORECASE)
-        if json_match:
-            response_content = json_match.group(1).strip()
-        
-        parsed_llm_response = json.loads(response_content)
-    except Exception as e:
-        error_msg = f"Failed to parse LLM output for databuck validation: {e}. Output was: {llm_response_str}"
-        logger.error(error_msg)
-        send_conversational_message(error_msg, "error")
-        raise Exception(error_msg)
-
-    is_out_of_bounds = parsed_llm_response.get('comparison_result') == 'out_of_bounds'
-
-    result = {
-        "is_out_of_bounds": is_out_of_bounds,
-        "actual_value": parsed_llm_response.get('identified_value'),
-        "lower_bound": lower_bound,
-        "upper_bound": upper_bound,
-        "message": parsed_llm_response.get('reasoning'),
-        "l0_validation_query" : individual_query
-    }
+    reasoning = (f"Value {actual_value:.2f} is outside the specified threshold [{lower_bound:.2f}, {upper_bound:.2f}]."
+                 if is_out_of_bounds else f"Value {actual_value:.2f} is within the specified threshold.")
 
     trace_data = {}
-    l0_key = f"{failed_table}.{failed_column}"
+    paths_to_process = []
+    mismatched_nodes = []
+    loaded_graphs = {}
     
-    if result["is_out_of_bounds"]:
-        trace_data[failed_table] = {}
-        trace_data[failed_table][failed_column] = [{
-                    "step_num": 0,
-                    "table_name": failed_table,
-                    "column_name": failed_column,
-                    "sql_query": individual_query,
-                    "sql_output": query_output_json,
-                    "transformation_from_prev": None
-                }]
-        
+
+    if is_out_of_bounds:
+        l0_trace_entry = {
+            "step_num": 0, "table_name": failed_table, "column_name": failed_column,
+            "sql_query": individual_query, "transformation_from_prev": "Initial Anomaly",
+            "check_type": "statistical_trend_check", "actual_value": actual_value,
+            "historical_expected_value": ev, "historical_std_dev": sd,
+            "lower_bound": lower_bound, "upper_bound": upper_bound,
+            "is_mismatch": is_out_of_bounds, "mismatch_reason": reasoning
+        }
+
+        trace_data[failed_table] = {failed_column: [l0_trace_entry]}
+        l0_key = f"{failed_table}.{failed_column}"
         paths_to_process.append((0, failed_table, failed_column, l0_key))
-        
-        # Send completed failure status for columns that are out of bounds and need tracing
-        send_node_status_update(failed_table, failed_column, "completed_failure", f"Anomaly detected in {failed_table}.{failed_column}")
-        
-        send_step_message(9, "⚠️", "Anomaly Detected", 
-                         f"**Analysis Result:** Significant deviation detected in {failed_column}.\n\n**Reasoning:** {parsed_llm_response.get('reasoning')}\n\n**Next Step:** Starting lineage trace to identify root cause.")
+        mismatched_nodes.append({"from_node": "External Alert", "to_node": l0_key, "details": l0_trace_entry})
+        lineage_table_name = failed_table.rsplit('.', 1)[-1]
+        graph_file_path = f"{lineage_graphs}/{lineage_table_name}.{failed_column}.gexf"
+        try:
+            lineage_graph = nx.read_gexf(graph_file_path)
+            loaded_graphs[l0_key] = lineage_graph
+            logger.info(f"Successfully loaded lineage graph for '{l0_key}' from {graph_file_path}")
+        except:
+            logger.info(f"Error in loading lineage graph for '{l0_key}' from {graph_file_path}")
+        # display_message("bot", f""" Analysing the data on L0 layer for <b>{failed_column}</b><br><br>
+        #                             <b>Reasoning:</b> {parsed_llm_response.get('reasoning')}<br><br>
+        #                             <b>SQL query for actual value:</b><br>
+        #                             <pre><code>{individual_query}</code></pre><br>
+        #                             A significant deviation has been detected in the {failed_column} column's values over the past month. A lineage trace is necessary to uncover the root cause.
+        #                             """)
     else:
         # Send completed success status for columns that are within bounds
-        send_node_status_update(failed_table, failed_column, "completed_success", f"Validation successful for {failed_table}.{failed_column}")
+        send_message("node_status", f"Validation successful for {failed_table}.{failed_column}", 
+                   node_id=f"{failed_table}.{failed_column}", status="completed_success")
         
-        send_step_message(9, "✅", "Validation Passed", 
-                         f"**Analysis Result:** The data in column {failed_column} falls within expected range.\n\n**Reasoning:** {parsed_llm_response.get('reasoning')}\n\n**Conclusion:** No lineage tracing necessary.")
+        # display_message("bot", f""" Analysing the data on L0 layer for <b>{failed_column}</b><br><br>
+        #                             <b>Reasoning:</b> {parsed_llm_response.get('reasoning')}<br><br>
+        #                             <b>SQL query for actual value:</b><br>
+        #                             <pre><code>{individual_query}</code></pre><br>
+        #                             The data in column <b>{failed_column}</b> falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary.
+        #                             """)
+    return {"trace_data": trace_data, "paths_to_process": paths_to_process, "mismatched_nodes": mismatched_nodes, "loaded_lineage_graphs" : loaded_graphs}
 
-    # Build and send the full lineage tree for the paths we need to process
-    if paths_to_process:
-        # Temporarily set paths_to_process in state for lineage tree building
-        temp_state = state.copy()
-        temp_state['paths_to_process'] = paths_to_process
-        build_and_send_lineage_tree(temp_state)
-
-    logger.info(f"LLM Analysis: {result['message']}")
-
-    return {"initial_check_result": result, "trace_data": trace_data, "paths_to_process" : paths_to_process}
-	
-
-def trace_backward_step_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
+def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Performs one step backward in the data lineage for the specified paths.
-    Finds predecessors, generates and executes queries for the previous layer,
-    and updates the trace data. Handles multiple sources for a single column.
+    Performs one step backward, generates queries, executes them, and performs
+    value comparisons (Equality vs. Statistical) directly within the step.
+    Only mismatched paths are added to the next queue.
     """
-
-    trace_data = state['trace_data']
+    trace_data = state['trace_data'].copy()
     paths_to_process = state['paths_to_process']
+    mismatched_nodes = state.get('mismatched_nodes', [])
+    loaded_graphs = state.get('loaded_lineage_graphs', {})
 
     if not paths_to_process:
-        logger.info("No paths left to process. Ending backward trace.")
-        return {"paths_to_process": []} # Signal to stop looping
-    else:
-        send_step_message(12, "🔄", "Lineage Tracing", "Tracing back through data lineage to collect information across layers...")
-        
+        logger.info("No paths left to process.")
+        return {"paths_to_process": []}
+
+    # display_message('bot', "Tracing one layer back in the lineage and comparing data values...")
     next_paths_to_process = []
-    processed_paths_current_step = []
 
     for current_step_num, current_table, current_column, l0_key in paths_to_process:
-        
         full_node_name = f"{current_table}.{current_column}"
-        lineage_table = current_table.rsplit('.')[-1]
-        
-        send_conversational_message(f"🔍 **Analyzing lineage for:** {current_column}", "progress")
-        
-        # Dummy lineage graph loading - in a real scenario, this would be a lookup or a global graph
-        # For demonstration, create a simple graph if not exists for a column
-        lineage_graph_path = f"{lineage_graphs}/{lineage_table}.{current_column}.gexf"
-        if not os.path.exists("lineage_graphs"):
-            os.makedirs("lineage_graphs")
-        
-        try:
-            lineage_graph = nx.read_gexf(lineage_graph_path)
-        except Exception as e:
-            send_conversational_message(f"⚠️ Error loading lineage graph for {current_column}: {str(e)}", "warning")
-            print('Error loading Graph :', e)
-            break
-        
-        predecessors = get_predecessor_info(full_node_name, lineage_graph)
-        
-        if not predecessors:
-            send_conversational_message(f"🔚 **End of lineage:** No upstream dependencies found for {current_column}.", "info")
-            logger.info(f"No predecessors found for {full_node_name}. Ending trace for this path.")
-            continue # No predecessors, this path ends here
-        
-        send_conversational_message(f"✅ **Found {len(predecessors)} upstream source(s) for {current_column}**", "success")
-        
-        l0_table, l0_column = l0_key.rsplit('.', 1)
 
-        last_step_for_this_path = None
-        for step_data in trace_data[l0_table][l0_column]:
-            if step_data['step_num'] == current_step_num and \
-            step_data['table_name'] == current_table and \
-            step_data['column_name'] == current_column:
-                last_step_for_this_path = step_data
-                break
-        
-        if last_step_for_this_path is None:
-            logger.error(f"Could not find last step data for {current_table}.{current_column} at step {current_step_num}.")
+        lineage_graph = loaded_graphs.get(l0_key)
+        if not lineage_graph:
+            logger.warning(f"Lineage graph not found for L0 key: {l0_key}. Ending trace for this path.")
             continue
 
-        last_query = last_step_for_this_path['sql_query']
-        
+        predecessors = get_predecessor_info(full_node_name, lineage_graph)
+
+        if not predecessors:
+            logger.info(f"No predecessors found for {full_node_name}. Ending trace for this path.")
+            continue
+
+        l0_table, l0_column = l0_key.rsplit('.', 1)
+       # print('trace_data', trace_data)
+        current_node_data = next(
+            (s for s in trace_data[l0_table][l0_column] if s['step_num'] == current_step_num and s['table_name'] == current_table),
+            None
+        )
+
+        if not current_node_data:
+            logger.error(f"Could not find trace data for {full_node_name} at step {current_step_num}")
+            continue
+
+        downstream_actual_value = current_node_data.get('actual_value')
+        last_query = current_node_data.get('sql_query')
+        is_multi_source = len(predecessors) > 1
+
         for pred in predecessors:
-            pred_table = pred['prev_table']
-            pred_column = pred['prev_column']
+            pred_table, pred_column = pred['prev_table'], pred['prev_column']
             transformation_logic = pred['transformation']
-            
-            # Send status update that we are checking this new node
-            send_node_status_update(pred_table, pred_column, "checking", f"Analyzing predecessor {pred_table}.{pred_column}")
-            
-            send_conversational_message(f"📊 **Checking upstream column:** {pred_column} from {pred_table}", "progress")
-            send_conversational_message(f"**Transformation:** {transformation_logic}", "info")
-            
-            logger.info(f'Generating query for table : {pred_table} and column : {pred_column}')
-            backward_query = ""
-            if transformation_logic != 'One-to-One':
-                
-                backward_sql_prompt = f"""Your role is to act as an expert SQL query generator, specifically for data lineage analysis. Given an L0 (downstream) SQL query and the transformation logic from L1 (upstream) to L0, your task is to construct an L1 SQL query. The critical requirement is that the data produced by the L1 query, when passed through the given L1 to L0 transformation, must perfectly replicate the results of the L0 query.
-                                Output only the resulting SQL query.
+            check_result = {}
+			
+            if pred_column in ['close_yr_mth', 'bllr_bill_cyc_num']:
+                check_result['check_type'] = 'null_check'
+                is_mismatch = False
+                null_check_prompt = f"""You are an expert SQL query generator specializing in data quality checks. Your task is to create a single, efficient SQL query to calculate the percentage of NULL values for a specific column in a table, based on a date filter from a reference query.
+                                        **Your Instructions:**
 
-                                **Input:**
-                                * **L0 SQL Query:** {last_query}
-                                * **Lineage Information (L1 to L0):**
-                                    * **L0 Table:** {current_table}
-                                    * **L0 Column:** {current_column}
-                                    * **L1 Table:** {pred_table}
-                                    * **L1 Column:** {pred_column}
-                                    * **Transformation Logic:** {transformation_logic}
+                                        1.  **Analyze the Reference Query:** First, carefully examine the `reference_sql_query` to identify and extract the complete date filter condition from its `WHERE` clause. This could be a single equality (e.g., `activity_dt = '2024-07-15'`) or a range (e.g., `event_date BETWEEN '...' AND '...'`).                                       
+                                        2.  **Construct the New Query:** Build a new SQL query that targets the specified `target_table_name` and `target_column_name`.                                    
+                                        3.  **Apply the Date Filter:** In the `WHERE` clause of your new query, you must apply the *exact same* date filter condition you extracted in step 1.                                       
+                                        4.  **Calculate Null Percentage:** The `SELECT` clause must calculate the percentage of rows where the `target_column_name` is NULL.
+                                            *   The calculation should be: `(COUNT of NULL rows / Total COUNT of rows) * 100`.
+                                            *   Use floating-point arithmetic (e.g., multiply by `100.0`) to ensure an accurate decimal result.
+                                        5.  **Handle Edge Cases:** Your query MUST handle the case where the filtered result set is empty (`COUNT(*)` is 0). In this situation, you must return `100.0`, as this indicates the column is entirely empty for the given period.
+                                        6.  **Format the Output:** The final query must return a single column named exactly `null_pct` with a single row containing the percentage value (from 0.0 to 100.0).
 
-                                **Important Considerations for the L1 Query:**
-                                * Always preserve and include `GROUP BY` and `WHERE` clauses from the L0 query.
-                                * Avoid direct aggregation on aggregation; use subqueries when needed.
-                                * The transformation logic provided must be used exactly as is, without any modifications to column relationships, filters, or `GROUP BY` statements.
-                                * Match `CASE` conditions and thresholds from the L0 query in the L1 query.
-                                * The ultimate goal is for the L1 query to produce results that, when transformed, are bit-for-bit identical to the L0 query's output.
-                                * Generate aggregated results in the L1 query to enable comparisons with aggregated historical data."""
+                                        **Context for this Task:**                                   
+                                        *   **Target Table Name:** `{pred_table}`
+                                        *   **Target Column Name:** `{pred_column}`
+                                        *   **Reference SQL Query:**
+                                            ```sql
+                                            {last_query}
+                                            ```
 
-                backward_query_response = llm.invoke(backward_sql_prompt).content
+                                        **Example 1: Simple Date Filter**
+                                        *   **Target Table Name:** `customer_profiles`
+                                        *   **Target Column Name:** `email_address`
+                                        *   **Reference SQL Query:** `SELECT status, COUNT(*) FROM daily_logins WHERE login_dt = '2023-11-10' GROUP BY status;`
+                                        *   **Expected Output SQL:**
+                                            ```sql
+                                            SELECT
+                                            CASE
+                                                WHEN COUNT(*) = 0 THEN 100.0
+                                                ELSE (SUM(CASE WHEN email_address IS NULL THEN 1.0 ELSE 0.0 END) * 100.0) / COUNT(*)
+                                            END AS null_pct
+                                            FROM
+                                            customer_profiles
+                                            WHERE
+                                            login_dt = '2023-11-10';
+                                            ```
 
-                if not backward_query_response:
-                    logger.warning("LLM returned empty response for backward query generation")
-                    continue  # Skip this path
-                
-                backward_query = extract_sql_from_text(backward_query_response)
-            else:
-                # If transformation is OneToOne, the L1 query is likely the same as L0, just on the L1 table/column
-                backward_query = last_query.replace(f"{current_table}.{current_column}", f"{pred_table}.{pred_column}")
-                logger.info(f"One-to-One transformation. Simplified L1 query: {backward_query}")
-   
-            backward_query = replace_technical_date_with_business_date(backward_query, pred_table.rsplit('.')[-1])
-            
-            send_conversational_message(f"**Generated upstream query for {pred_column}:**\n```sql\n{backward_query}\n```", "code")
-            
-            try:
-                del os.environ['http_proxy']
-                del os.environ['https_proxy']
-                del os.environ['no_proxy']
-            except:
-                pass
-            
-            # Execute the query
-            try:
-                backward_output_df = bigquery_execute(backward_query)
-                backward_output = backward_output_df.to_json(orient='records')
-                send_conversational_message(f"✅ **Successfully retrieved data from {pred_column}**", "success")
-            except Exception as initial_error:
-                logger.warning(f'Initial query failed: {initial_error}. Attempting to correct SQL query...')
-                send_conversational_message(f"⚠️ **Query failed, attempting to fix:** {str(initial_error)}", "warning")
-                
-                retries = 0
-                backward_output = None
-                
-                while retries < 3 and backward_output is None:
-                    try:
-                        sql_correction_prompt = f"""As an expert BigQuery SQL generator, your role is to debug and correct SQL queries based on error messages.
-                                                    Examine the BigQuery error output:
-                                                    {str(initial_error)}
+                                        **Example 2: Date Range Filter**
+                                        *   **Target Table Name:** `transactions`
+                                        *   **Target Column Name:** `shipping_address_id`
+                                        *   **Reference SQL Query:** `SELECT product_id, SUM(amount) FROM sales WHERE event_date BETWEEN '2024-01-01' AND '2024-01-31' GROUP BY product_id;`
+                                        *   **Expected Output SQL:**
+                                            ```sql
+                                            SELECT
+                                            CASE
+                                                WHEN COUNT(*) = 0 THEN 100.0
+                                                ELSE (SUM(CASE WHEN shipping_address_id IS NULL THEN 1.0 ELSE 0.0 END) * 100.0) / COUNT(*)
+                                            END AS null_pct
+                                            FROM
+                                            transactions
+                                            WHERE
+                                            event_date BETWEEN '2024-01-01' AND '2024-01-31';
+                                            ```
+                                        **Your Final Output:**
 
-                                                    **Error Resolution Strategy:**
-                                                    * **If the error is related to "aggregation of an aggregation":** This is a common BigQuery limitation. To resolve this, break down the query into two stages:
-                                                        * **Stage 1 (Inner Query):** Calculate the first level of aggregation (e.g., `SUM(x)`, `COUNT(y)`) in a Common Table Expression (CTE) or a subquery.
-                                                        * **Stage 2 (Outer Query):** Apply any subsequent conditional logic or aggregations using the results from Stage 1. For example, if you had `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`, refactor `COUNT(column)` into the inner query first.
-
-                                                    * **For all other error types:** Carefully analyze the error message. Identify the root cause (e.g., syntax error, invalid column name, data type mismatch) and implement the necessary correction.
-
-                                                    The original errored SQL query is:
-                                                    {backward_query}
-                                                    Please generate the fully corrected and runnable BigQuery SQL query."""
-                        
-                        backward_query_response = llm.invoke(sql_correction_prompt).content
-                        if not backward_query_response:
-                            logger.warning("LLM returned empty response for SQL correction")
-                            retries += 1
-                            continue
-                            
-                        match = re.search(r"```sql\n(.*?)\n```", backward_query_response, re.DOTALL | re.IGNORECASE)
-                        if match:
-                            backward_query = match.group(1).strip()
-                        else:
-                            logger.warning("No SQL found in LLM correction response")
-                            retries += 1
-                            continue
-                            
-                        # Try the corrected query
-                        corrected_df = bigquery_execute(backward_query)
-                        backward_output = corrected_df.to_json(orient='records')
-                        send_conversational_message(f"✅ **Query correction successful after {retries + 1} attempt(s)**", "success")
-                        logger.info(f"Successfully corrected SQL query after {retries + 1} attempts")
-                        
-                    except Exception as correction_error:
-                        logger.warning(f"SQL correction attempt {retries + 1} failed: {correction_error}")
-                        retries += 1
-                        
-                if backward_output is None:
-                    error_msg = f"Failed to execute backward query after 3 correction attempts for {pred_table}.{pred_column}"
-                    logger.error(error_msg)
-                    send_conversational_message(f"❌ **Failed to retrieve data from {pred_column} after multiple attempts**", "error")
-                    continue  # Skip this predecessor and continue with others
+                                        Return only the complete, executable SQL query on Big Query. Do not add any explanations, markdown formatting, or introductory text."""
+                backward_query = llm.invoke(null_check_prompt).content
+                backward_query = extract_sql_from_text(backward_query)
+                backward_query = replace_technical_date_with_business_date(backward_query, pred_table.rsplit('.', 1)[-1])
+                null_check_resp = bigquery_execute(backward_query)
                     
+
+                if null_check_resp['null_pct'][0] > 0.02:
+                
+                    check_result.update({
+                        'is_mismatch': True,
+                        'mismatch_reason': f"NULL value at this column is more than {null_check_resp['null_pct'][0]}%."
+                    })
+                else:
+                    check_result.update({
+                        'is_mismatch': False,
+                        'mismatch_reason': f"No issue found for this column."
+                    })
+            elif not is_multi_source:
+                # One-to-one or non-multi-source transformation
+                if transformation_logic == 'One-to-One':
+                    backward_query = last_query.replace(f"{current_table}.{current_column}", f"{pred_table}.{pred_column}")
+                    logger.info(f"One-to-One transformation. Simplified query: {backward_query}")
+                else:
+                    backward_sql_prompt = f"""Your role is to act as an expert SQL query generator, specifically for data lineage analysis. Given an L{current_step_num} (downstream) SQL query and the transformation logic from L{current_step_num+1} (upstream) to L{current_step_num}, your task is to construct an L{current_step_num+1} SQL query. The critical requirement is that the data produced by the L{current_step_num+1} query, when passed through the given L{current_step_num+1} to L{current_step_num} transformation, must perfectly replicate the results of the L{current_step_num} query.
+                                    Output only the resulting SQL query.
+
+                                    **Input:**
+                                    * **L{current_step_num} SQL Query:** {last_query}
+                                    * **Lineage Information (L{current_step_num+1} to L{current_step_num}):**
+                                        * **L{current_step_num} Table:** {current_table}
+                                        * **L{current_step_num} Column:** {current_column}
+                                        * **L{current_step_num+1} Table:** {pred_table}
+                                        * **L{current_step_num+1} Column:** {pred_column}
+                                        * **Transformation Logic:** {transformation_logic}
+
+                                    **Important Considerations for the L{current_step_num+1} Query:**
+                                    * Always preserve and include `GROUP BY` and `WHERE` clauses from the L{current_step_num} query.
+                                    * Avoid direct aggregation on aggregation; use subqueries when needed.
+                                    * The transformation logic provided must be used exactly as is, without any modifications to column relationships, filters, or `GROUP BY` statements.
+                                    * Match `CASE` conditions and thresholds from the L{current_step_num} query in the L{current_step_num+1} query.
+                                    * The ultimate goal is for the L{current_step_num+1} query to produce results that, when transformed, are bit-for-bit identical to the L{current_step_num} query's output.
+                                    * Generate aggregated results in the L{current_step_num+1} query to enable comparisons with aggregated historical data."""
+									
+                    backward_query_response = llm.invoke(backward_sql_prompt).content
+                    backward_query = extract_sql_from_text(backward_query_response)
+                
+                backward_query = replace_technical_date_with_business_date(backward_query, pred_table.rsplit('.', 1)[-1])
+                
+                backward_output_df = execute_and_correct_query(backward_query)
+                upstream_actual_value = extract_metric_from_output(backward_output_df.to_json(orient='records'), backward_query)
+                
+                # Perform Statistical Check
+                check_result = perform_statistical_check(pred_table, pred_column, backward_query, upstream_actual_value)
+
+            else: # is_multi_source
+                # Multi-source transformation logic
+                pairwise_prompt = f"""
+                            You are a SQL formula analyst. A downstream column `{current_column}` is derived from multiple upstream columns.
+                            Your task is to isolate the part of the formula that is relevant ONLY to the target upstream column `{pred_column}`.
+
+                            - Full Transformation Logic for `{current_column}`:
+                            "{transformation_logic}"
+
+                            - Target Upstream Column to Isolate: `{pred_column}`
+
+                            Instructions:
+                            1. Analyze the full transformation logic.
+                            2. Extract and return ONLY the expression component that involves `{pred_column}`.
+                            3. Preserve any aggregations (SUM, COUNT, etc.) or arithmetic operators (+, -, *, /) directly associated with it.
+                            4. If the logic is a simple passthrough (e.g., just the column name), return the column name.
+
+
+                            Return only the resulting isolated SQL snippet, with no explanation.
+
+                            Example:
+                            - Full Logic: "SUM(source.col_b) / NULLIF(SUM(source.col_c), 0)"
+                            - Target Column: "col_b"
+                            - Your Expected Output: "SUM(source.col_b)"
+
+                            Example 2:
+                            - Full Logic: "CASE WHEN source.status = 'A' THEN source.col_x ELSE 0 END - source.col_y"
+                            - Target Column: "col_y"
+                            - Your Expected Output: "- source.col_y"
+                            """
+                try:
+                    isolated_transformation_logic = llm.invoke(pairwise_prompt).content.strip()
+                    logger.info(f"Isolated logic for '{pred_column}': {isolated_transformation_logic}")
+                except Exception as e:
+                    logger.error(f"Failed to isolate transformation logic with LLM: {e}. Defaulting to full logic.")
+                    isolated_transformation_logic = transformation_logic
+
+                backward_sql_prompt = f"""
+                                        Your role is to act as an expert SQL query generator for data lineage analysis.
+                                        Given a downstream (L{current_step_num}) SQL query and the specific transformation logic from an upstream source (L{current_step_num+1}), construct the upstream SQL query.
+                                        - Downstream (L{current_step_num}) SQL Query:
+                                        ```sql
+                                        {last_query}
+                                        ```
+                                        - Lineage Information (L{current_step_num+1} to L{current_step_num}):
+                                        - Upstream Table: `{pred_table}`
+                                        - Upstream Column: `{pred_column}`
+                                        - **Isolated Transformation Logic**: "{isolated_transformation_logic}"
+
+                                        Instructions:
+                                        - Preserve all `GROUP BY` and `WHERE` clauses from the downstream query.
+                                        - Generate an aggregated query for the upstream data using the provided isolated logic.
+                                        - Use the same **FILTER DATE** as the date mentioned in the downstream SQL query.
+                                        - Analyze the isolated transformation logic. For any table references or aliases found within this logic, check if the referenced table is already included in the main query. If it is, remove the alias or reference from the transformation logic.
+                                        - Return only the executable BigQuery SQL.
+                                        """
+                backward_query_response = llm.invoke(backward_sql_prompt).content
+                backward_query = extract_sql_from_text(backward_query_response)
+                backward_query = replace_technical_date_with_business_date(backward_query, pred_table.rsplit('.', 1)[-1])
+
+                backward_output_df = execute_and_correct_query(backward_query)
+                upstream_actual_value = extract_metric_from_output(backward_output_df.to_json(orient='records'), backward_query)
+                
+                # Perform Statistical Check
+                check_result = perform_statistical_check(pred_table, pred_column, backward_query, upstream_actual_value)
+
             next_step_num = current_step_num + 1
 
-            # Append to the trace for the original L0 path
-            trace_data[current_table][current_column].append({
-                "step_num": next_step_num,
-                "table_name": pred_table,
-                "column_name": pred_column,
-                "sql_query": backward_query,
-                "sql_output": backward_output,
-                "transformation_from_prev": transformation_logic
-            })
-            
-            send_conversational_message(f"📝 **Lineage Step {next_step_num} completed:** Successfully traced {current_column} → {pred_column}", "info")
-                
-    logger.info(f'Lineage traced data : {trace_data}')
-    
-    # Print to console for command-line testing
-    if not WEB_MODE:
-        print(f"\n{'='*60}")
-        print("🔄 TRACE BACKWARD STEP NODE RESPONSE")
-        print(f"{'='*60}")
-        paths_processed = len(paths_to_process) - len(next_paths_to_process)
-        print(f"Paths processed in this step: {paths_processed}")
-        print(f"Remaining paths to process: {len(next_paths_to_process)}")
-        
-        # Show details of current processing
-        for current_step_num, current_table, current_column, l0_key in paths_to_process:
-            full_node_name = f"{current_table}.{current_column}"
-            lineage_table = current_table.rsplit('.')[-1]
-            lineage_graph_path = f"{lineage_graphs}/{lineage_table}.{current_column}.gexf"
-            
-            if os.path.exists(lineage_graph_path):
-                try:
-                    lineage_graph = nx.read_gexf(lineage_graph_path)
-                    predecessors = get_predecessor_info(full_node_name, lineage_graph)
-                    print(f"  Step {current_step_num}: {full_node_name}")
-                    if predecessors:
-                        print(f"    Found {len(predecessors)} predecessor(s):")
-                        for pred in predecessors:
-                            print(f"      - {pred['prev_table']}.{pred['prev_column']} (Transform: {pred['transformation']})")
-                    else:
-                        print(f"    No predecessors found - end of lineage")
-                except Exception as e:
-                    print(f"    Error loading lineage graph: {e}")
-            else:
-                print(f"    Lineage graph not found: {lineage_graph_path}")
-                
-        print(f"{'='*60}\n")
-    
-    return {"trace_data": trace_data, "paths_to_process": next_paths_to_process}
-	
-def analyze_results_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
-    """
-    Analyzes the collected trace data using an LLM to infer potential root causes.
-    Provides the LLM with context including data samples, queries, and transformations.
-    """
-    send_step_message(13, "📈", "Root Cause Analysis", "Analyzing collected lineage data to identify the root cause...")
+            new_step_data = {
+                "step_num": next_step_num, "table_name": pred_table, "column_name": pred_column,
+                "sql_query": backward_query, "transformation_from_prev": transformation_logic,
+                **check_result
+            }
 
-    trace_data = state['trace_data']
-    analysis_results = {}
+            trace_data[l0_table][l0_column].append(new_step_data)
+
+            if check_result['is_mismatch']:
+                # display_message("bot", f"""Traversing through lineage for <b>{current_column}</b><br><br>
+                #                             <b>Layer Number:</b> {next_step_num}<br><br>
+                #                             <b>Table Name:</b> {pred_table}<br><br>
+                #                             <b>Column Name:</b> {pred_column}<br><br>
+                #                             <b>SQL query:</b><br>
+                #                             <pre><code>{backward_query}</code></pre><br><br>
+                #                             <b>Inference:</b> DISCREPANCY FOUND at L{next_step_num} ({pred_table}.{pred_column}):<br><b>Reason:</b> {check_result['mismatch_reason']}""")
+
+                mismatched_nodes.append({
+                    "l0_key": l0_key,
+                    "from_node": full_node_name,
+                    "to_node": f"{pred_table}.{pred_column}",
+                    "details": new_step_data
+                })
+                next_paths_to_process.append((next_step_num, pred_table, pred_column, l0_key))
+            else:
+                pass
+                # display_message("bot", f"""Traversing through lineage for <b>{current_column}</b><br><br>
+                #                             <b>Layer Number:</b> {next_step_num}<br><br>
+                #                             <b>Table Name:</b> {pred_table}<br><br>
+                #                             <b>Column Name:</b> {pred_column}<br><br>
+                #                             <b>SQL query:</b><br>
+                #                             <pre><code>{backward_query}</code></pre><br><br>
+                #                             <b>Inference:</b> Data consistent at L{next_step_num} ({pred_table}.{pred_column}):<br><b>Reason:</b> {check_result['mismatch_reason']}""")
+
+    print('next_paths_to_process', next_paths_to_process)
+    return {"trace_data": trace_data, "paths_to_process": next_paths_to_process, "mismatched_nodes": mismatched_nodes}
+
+def execute_and_correct_query(query, retries=3):
+    """
+    Executes a BigQuery SQL query and attempts to correct it on failure.
+    """
+    for attempt in range(retries):
+        try:
+            output_df = bigquery_execute(query)
+            if isinstance(output_df, pd.DataFrame):
+                return output_df
+        except Exception as e:
+            logger.warning(f"Query failed on attempt {attempt+1}: {e}")
+            sql_correction_prompt = f"""As an expert BigQuery SQL generator, your role is to debug and correct SQL queries based on error messages.
+            Examine the BigQuery error output: {e}
+            The original errored SQL query is: {query}
+            Please generate the fully corrected and runnable BigQuery SQL query."""
+            
+            try:
+                correction_response = llm.invoke(sql_correction_prompt).content
+                corrected_query = extract_sql_from_text(correction_response)
+                query = corrected_query # Update query for next attempt
+            except Exception as llm_e:
+                logger.error(f"Failed to get a corrected query from LLM: {llm_e}")
+                return pd.DataFrame() # Return an empty DataFrame on LLM failure
+
+    logger.error(f"Failed to execute query after {retries} attempts.")
+    return pd.DataFrame()
+
+def perform_statistical_check(table, column, query, actual_value):
+    """
+    Performs a statistical check on an upstream column.
+    """
+    check_result = {'check_type': 'statistical_trend_check'}
+    std_dev_prompt = f"""Generate a SQL query to calculate the standard deviation on table {table} and column '{column}' from the previous date mentioned in the SQL query {query}.
+    The expected value and standard deviation should be calculated using data from the **last 30 days**, including the previous date.
+    To calculate standard deviation group by date column and then calculate the standard deviation value.
+    The result from this query should only have the standard deviation value with the column names as expected_value and std_dev.
+
+    Important Constraint :
+    - Use the case statement as is while getting the data for the previous dates.
+    - Apply the neccasary filters, group by while getting the data for the previous dates.
+    - Respond only with SQL query without any explaination.
+    - Resulting SQL query should be compatible with BigQuery.
+    - The standard deviation and expected value should be calculated using data from the 30 days prior to the date specified in the SQL query.
+    """
+    std_dev_sql = extract_sql_from_text(llm.invoke(std_dev_prompt).content)
+    std_dev_df = bigquery_execute(std_dev_sql)
+
+    expected_value = float(std_dev_df['expected_value'].iloc[0]) if not std_dev_df.empty and 'expected_value' in std_dev_df.columns else 0.0
+    std_dev = float(std_dev_df['std_dev'].iloc[0]) if not std_dev_df.empty and 'std_dev' in std_dev_df.columns else 0.0
+
+    lower_bound = expected_value - (3 * std_dev)
+    upper_bound = expected_value + (3 * std_dev)
+    is_mismatch = not (lower_bound <= actual_value <= upper_bound) if actual_value is not None else True
+
+    check_result.update({
+        'actual_value': actual_value, 'historical_expected_value': expected_value,
+        'historical_std_dev': std_dev, 'is_mismatch': is_mismatch,
+        'mismatch_reason': f"Upstream value {actual_value:.2f} is outside its historical 3-sigma range [{lower_bound:.2f}, {upper_bound:.2f}]." if is_mismatch else "Value is within its historical statistical range."
+    })
+    return check_result
+
+
+def display_report_on_streamlit(report_data: dict, impacted_datasets):
+    """
+    Takes the final report JSON and renders it in Streamlit
+    using the specified template format.
+    """
+
+    rca_id = str(uuid.uuid4())[:8]
+    execution_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+    
+    summary_df = pd.DataFrame([
+        {"Field": "RCA ID", "Description": rca_id},
+        {"Field": "Date/Time", "Description": execution_time},
+        {"Field": "Issue Detected", "Description": report_data.get("summary", {}).get("issue_detected", "N/A")},
+        {"Field": "Severity", "Description": report_data.get("summary", {}).get("severity", "N/A")},
+        {"Field": "Impacted Dataset(s)", "Description": json.dumps(impacted_datasets)},
+        {"Field": "Business Impact", "Description": report_data.get("summary", {}).get("business_impact", "N/A")},
+    ])
+
+    # st.table(summary_df)
+    
+    # display_message('bot', f"""<b>1. Summary : </b><br><br>
+    #                               {summary_df.to_html(justify='left',index=False)}""")
+
+
+    traversal_df = pd.DataFrame(report_data.get("lineage_traversal", []))
+    if not traversal_df.empty:
+        
+        # display_message('bot', f"""<b>2. Pipeline Lineage Traversal Summary : </b><br><br>
+        #                           {traversal_df.rename(columns={
+        #     "layer_step": "Layer / Step",
+        #     "dataset_table": "Dataset / Table",
+        #     "test_performed": "Test Performed"
+        # }).to_html(justify='left',index=False)}""")
+    else: 
+        pass
+        # st.write("N/A")
+
+    rca_df = pd.DataFrame([
+        {"Attribute": "Origin Node", "Details": report_data.get("root_cause_analysis", {}).get("origin_node", "N/A")},
+        {"Attribute": "Cause Identified", "Details": report_data.get("root_cause_analysis", {}).get("cause_identified", "N/A")},
+        {"Attribute": "RCA Type", "Details": report_data.get("root_cause_analysis", {}).get("rca_type", "N/A")},
+        {"Attribute": "Supporting Evidence", "Details": report_data.get("root_cause_analysis", {}).get("supporting_evidence", "N/A")},
+    ])
+    
+    # display_message('bot', f"""<b>3. Root Cause Analysis: </b><br><br>
+    #                               {rca_df.to_html(justify='left',index=False)}""")
+
+    justification_points = report_data.get("justification_reasoning", [])
+    if justification_points:
+        justification_text = "<br>".join([f"- {point}" for point in justification_points])
+        # st.markdown(justification_text)
+        # display_message('bot', f"""<b>4. Justification & Reasoning: </b><br><br>
+        #                           {justification_text}""")
+    else:
+        # st.write("N/A")
+        pass
+
+    report_data ={"closure": {
+                    "rca_status": "Open",
+                    "owner": "Data Engineering Team",
+                    "eta_for_fix": "N/A"
+                }}
+    closure_df = pd.DataFrame([
+        {"Field": "RCA Status", "Description": report_data.get("closure", {}).get("rca_status", "N/A")},
+        {"Field": "Owner", "Description": report_data.get("closure", {}).get("owner", "N/A")},
+        {"Field": "ETA for Fix", "Description": report_data.get("closure", {}).get("eta_for_fix", "N/A")},
+    ])
+    # display_message('bot', f"""<b>5. Closure: </b><br><br>
+    #                               {closure_df.to_html(justify='left',index=False)}""")
+    
+# --- The New Final Node for the Graph ---
+def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
+    """
+    The final node in the graph. It synthesizes all findings from the entire trace
+    into a single, consolidated report that summarizes all issues and root causes.
+    """
+    # st.header("Consolidated Root Cause Analysis Report")
+
+    trace_data = state.get("trace_data", {})
+    all_mismatches = state.get("mismatched_nodes", [])
 
     if not trace_data:
-        logger.info("No trace data available for analysis.")
-        send_conversational_message("No lineage data was collected for analysis.", "info")
-        return {"analysis_results": {"summary": "No trace data generated."}}    
-    
-    send_conversational_message(f"🔍 **Analyzing {len(trace_data)} table(s) and their lineage paths...**", "progress")
+        st.error("Analysis failed: No trace data was generated.")
+        return {"analysis_results": {"error": "No trace data"}}
 
-    overall_summary_messages = []
-
+    # --- 1. GATHER AND CONSOLIDATE ALL DATA FROM THE ENTIRE TRACE ---
+    # Consolidate initial issues from all L0 failures
+    initial_issues = []
+    all_trace_steps = []
     for l0_table, columns_data in trace_data.items():
-        analysis_results[l0_table] = {}
         for l0_column, trace_steps in columns_data.items():
-            send_conversational_message(f"🔍 **Analyzing lineage for column:** {l0_column}", "progress")
-            
-            path_analysis = []
-            
-            # Sort trace steps by step_num to ensure correct comparison (L0, L1, L2...)
-            sorted_trace_steps = sorted(trace_steps, key=lambda x: x['step_num'])
+            initial_issues.append(trace_steps[0])
+            all_trace_steps.extend(trace_steps)
 
-            logger.info(f"Analyzing trace for {l0_table}.{l0_column} with {len(sorted_trace_steps)} steps using LLM.")
+    # Get a unique list of all datasets involved in the trace
+    impacted_datasets = sorted(list(set(step['table_name'] for step in all_trace_steps)))
 
-            for i in range(len(sorted_trace_steps) - 1):
-                if i == 0:
-                    send_conversational_message("🔄 **Starting cross-layer analysis to identify root cause...**", "progress")
-                current_step = sorted_trace_steps[i]
-                prev_step_upstream = sorted_trace_steps[i+1] # This is the upstream step
+    # Build a representative lineage traversal summary table (e.g., from the first path)
+    representative_trace_path = next(iter(trace_data.values()), {}).get(next(iter(next(iter(trace_data.values()), {}).keys()), None), [])
+    lineage_summary_table = []
 
-                current_table_column = f"{current_step['table_name']}.{current_step['column_name']}"
-                prev_table_column = f"{prev_step_upstream['table_name']}.{prev_step_upstream['column_name']}"
-                
-                send_conversational_message(f"🔗 **Comparing:** {prev_table_column} → {current_table_column}", "progress")
-                
-                # Convert outputs to JSON strings for LLM context
-                current_output_json = json.dumps(current_step['sql_output'], indent=2)
-                prev_output_json = json.dumps(prev_step_upstream['sql_output'], indent=2)
-
-                # if len(pd.DataFrame(current_output_json)) < 50 or len(pd.DataFrame(current_output_json)) < 50:
-                analysis_prompt = f"""
-                You are an expert data analyst and root cause investigator.
-                You have collected data traces for a data lineage path.
-                Your task is to analyze the relationship between two consecutive layers (downstream and upstream)
-                based on their SQL queries, the transformation applied, and the resulting data samples.
-                Determine if the data at the upstream layer (L{i+1}) correctly transforms into the data at the downstream layer (L{i})
-                according to the described transformation logic. Identify any potential discrepancies or mismatches.
-                While comparing the results between layers, consider only the rows which has the filtered value mentioned in the SQL queries.
-                Context for Analysis:
-                ---
-                Downstream Layer (L{i}) Information:
-                Table.Column: {current_table_column} (Step {current_step['step_num']})
-                SQL Query:
-                ```sql
-                {current_step['sql_query']}
-                ```
-                Sample Data Output (L{i}):
-                ```json
-                {current_output_json}
-                ```
-
-                ---
-                Upstream Layer (L{i+1}) Information:
-                Table.Column: {prev_table_column} (Step {prev_step_upstream['step_num']})
-                SQL Query:
-                ```sql
-                {prev_step_upstream['sql_query']}
-                ```
-                Sample Data Output (L{i+1}):
-                ```json
-                {prev_output_json}
-                ```
-
-                ---
-                Transformation from L{i+1} to L{i}:
-                "{prev_step_upstream['transformation_from_prev']}"
-
-                ---
-                Based on the above information, provide your analysis in a JSON format.
-                Focus on:
-                1.  **Match Status**: "MATCH", "MISMATCH", "INSUFFICIENT_DATA_FOR_ANALYSIS"
-                2.  **Inference**: A simple explanation of why you reached that status within 50 words. If it's a mismatch, try to pinpoint the discripency observed w.r.t to numbers compared.
-
-                Output JSON Format:
-                {{
-                    "match_status": "MATCH | MISMATCH | INSUFFICIENT_DATA_FOR_ANALYSIS",
-                    "inference": "Simple explanation of analysis within 50 words...",
-                }}
-
-                Important Constraint :
-                * If the absolute difference between L{i} and L{i+1} is less than 1% of L{i}, classify it as a MATCH. Otherwise, it's a MISMATCH.
-                """
-                
-                try:
-                    del os.environ['http_proxy']
-                    del os.environ['https_proxy']
-                    del os.environ['no_proxy']
-                except:
-                    pass
-                logger.info(f"Invoking LLM for analysis between {prev_table_column} and {current_table_column}...")
-                llm_analysis_response = llm.invoke(analysis_prompt).content
-
-                if not llm_analysis_response:
-                    logger.warning("LLM returned empty response for analysis")
-                    analysis_output = {
-                        "match_status": "INSUFFICIENT_DATA_FOR_ANALYSIS",
-                        "inference": "LLM returned empty response"
-                    }
-                else:
-                    match = re.search(r"```json\n(.*?)\n```", llm_analysis_response, re.DOTALL | re.IGNORECASE)
-
-                    if match:
-                        llm_analysis_response = match.group(1).strip()
-
-                    # parser_chain = llm | json_parser
-                    # llm_analysis_response = parser_chain.invoke(analysis_prompt)
-                    
-                    try:
-                        # print('Type_JSON', type(llm_analysis_response))
-                        analysis_output = json.loads(llm_analysis_response)
-                    except json.JSONDecodeError:
-                        logger.error(f"LLM returned unparseable JSON: {llm_analysis_response}. Retrying or setting default.")
-                        analysis_output = {
-                            "match_status": "ERROR_PARSING_LLM_OUTPUT",
-                            "inference": f"LLM output could not be parsed: {llm_analysis_response}",
-                            "recommendations": "Review LLM prompt or response format."
-                        }
-
-                path_analysis.append({
-                    "from_step": prev_step_upstream['step_num'],
-                    "from_table_column": prev_table_column,
-                    "to_step": current_step['step_num'],
-                    "to_table_column": current_table_column,
-                    "transformation": prev_step_upstream['transformation_from_prev'],
-                    **analysis_output # Spread the LLM's analysis output
-                })
-                
-                # Send analysis result with appropriate emoji and styling
-                status_emoji = "✅" if analysis_output['match_status'] == "MATCH" else "❌" if analysis_output['match_status'] == "MISMATCH" else "⚠️"
-                status_color = "success" if analysis_output['match_status'] == "MATCH" else "error" if analysis_output['match_status'] == "MISMATCH" else "warning"
-                
-                send_conversational_message(
-                    f"{status_emoji} **{prev_table_column} → {current_table_column}**\n\n**Status:** {analysis_output['match_status']}\n\n**Analysis:** {analysis_output['inference']}", 
-                    status_color
-                )
-                
-                overall_summary_messages.append(f"Analysis for {prev_table_column} -> {current_table_column}: {analysis_output.get('match_status')}")
-
-            analysis_results[l0_table][l0_column] = path_analysis
-            
-    overall_summary = "Analysis complete. Review results for discrepancies."
-    
-    logger.info(f'Analyzed results: {analysis_results}')
-    
-    # Refine overall summary based on LLM findings
-    if any("MISMATCH" in msg or "POSSIBLE_MISMATCH" in msg for msg in overall_summary_messages):
-        overall_summary = "Discrepancies or possible discrepancies detected across data lineage. Investigate 'MISMATCH' or 'POSSIBLE_MISMATCH' statuses in details."
-
-    logger.info("Analysis complete.")
-    
-    # Build final summary based on analysis results
-    mismatch_count = sum(1 for msg in overall_summary_messages if "MISMATCH" in msg)
-    match_count = sum(1 for msg in overall_summary_messages if "MATCH" in msg)
-    
-    if mismatch_count > 0:
-        final_summary = f"🎯 **Root Cause Identified:** Found {mismatch_count} data transformation issue(s) in the lineage. The root cause appears to be upstream data discrepancies that propagated downstream."
-    else:
-        final_summary = f"✅ **Analysis Complete:** All {match_count} lineage transformations appear correct. The data quality issue may be caused by factors outside the current lineage scope."
-    
-    # Send the final root cause summary based on Figma design
-    root_cause_info = {
-        "mismatch_count": mismatch_count,
-        "match_count": match_count,
-        "detailed_analysis": analysis_results,
-        "summary": final_summary
-    }
-    
-    send_final_root_cause_summary(root_cause_info)
-    
-    # Send feedback and extension questions
-    send_feedback_and_extensions()
-    
-    # Print to console for command-line testing
-    if not WEB_MODE:
-        print(f"\n{'='*60}")
-        print("📈 ANALYZE RESULTS NODE RESPONSE")
-        print(f"{'='*60}")
-        print(f"Overall Summary: {overall_summary}")
-        print(f"Final Summary: {final_summary}")
-        print(f"\nDetailed Analysis Results:")
-        
-        for l0_table, columns_data in analysis_results.items():
-            print(f"\nTable: {l0_table}")
-            for l0_column, path_analysis in columns_data.items():
-                print(f"  Column: {l0_column}")
-                if not path_analysis:
-                    print(f"    No analysis data available")
-                else:
-                    for analysis in path_analysis:
-                        print(f"    From: {analysis['from_table_column']} (Step {analysis['from_step']})")
-                        print(f"    To: {analysis['to_table_column']} (Step {analysis['to_step']})")
-                        print(f"    Transformation: {analysis['transformation']}")
-                        print(f"    Match Status: {analysis['match_status']}")
-                        print(f"    Inference: {analysis['inference']}")
-                        print(f"    ---")
-        print(f"{'='*60}\n")
-    
-    # Send final status updates for all analyzed nodes
-    for l0_table, columns_data in analysis_results.items():
-        for l0_column, path_analysis in columns_data.items():
-            if path_analysis:
-                # Check if any analysis shows a mismatch
-                has_mismatch = any("MISMATCH" in analysis.get('match_status', '') for analysis in path_analysis)
-                
-                if has_mismatch:
-                    # Send mismatch status for the column
-                    send_node_status_update(l0_table, l0_column, "completed_failure", "Root cause identified")
-                    
-                    # Also send mismatch status for upstream nodes that had mismatches
-                    for analysis in path_analysis:
-                        if "MISMATCH" in analysis.get('match_status', ''):
-                            upstream_table, upstream_column = analysis['from_table_column'].rsplit('.', 1)
-                            send_node_status_update(upstream_table, upstream_column, "completed_failure", 
-                                                  f"Data mismatch detected: {analysis.get('inference', '')}")
-                else:
-                    # Send success status
-                    send_node_status_update(l0_table, l0_column, "completed_success", "Analysis complete - no issues found")
-            else:
-                # No analysis data available
-                send_node_status_update(l0_table, l0_column, "completed_success", "No upstream dependencies found")
-    
-    return {
-        "analysis_results": {"summary": overall_summary, "details": analysis_results},
-        "final_summary": final_summary
-    }
-
-
-def build_and_send_lineage_tree(state: RootCauseAnalysisState):
-    """
-    Traverses the full lineage for all paths and sends the complete tree structure to the frontend.
-    Enhanced for React Flow compatibility with proper node positioning and styling.
-    """
-    paths_to_process = state.get('paths_to_process', [])
-    if not paths_to_process:
-        return
-
-    nodes = []
-    edges = []
-    all_node_ids = set()
-    table_positions = {}  # Track table positions for layout
-    y_offset = 0
-
-    def get_full_lineage(table, column, level=0):
-        node_id = f"{table}.{column}"
-        if node_id in all_node_ids:
-            return
-        
-        all_node_ids.add(node_id)
-        
-        # Determine position based on level in lineage
-        x_position = level * 300  # Horizontal spacing between levels
-        
-        # Get or assign Y position for this table
-        if table not in table_positions:
-            table_positions[table] = len(table_positions) * 150
-        y_position = table_positions[table]
-        
-        # Add node in React Flow format
-        nodes.append({
-            'id': node_id,
-            'type': 'custom',  # Will use custom node component
-            'data': {
-                'label': f"{table.split('.')[-1]}.{column}",
-                'table': table,
-                'column': column,
-                'status': 'pending',
-                'level': level
-            },
-            'position': {'x': x_position, 'y': y_position},
-            'style': {
-                'background': '#f3f4f6',
-                'border': '2px solid #d1d5db',
-                'borderRadius': '8px',
-                'padding': '10px',
-                'minWidth': '200px'
-            }
+    for step in sorted(representative_trace_path, key=lambda x: x['step_num']):
+        lineage_summary_table.append({
+            "layer_step": f"Layer {step['step_num']}",
+            "dataset_table": step['table_name'].rsplit('.',1)[-1],
+            "test_performed": step.get('check_type', 'Initial Check')
         })
+
+    # Find ALL deepest failure points across ALL paths
+    deepest_failures = []
+    if all_mismatches:
+        max_step_num = max(m['details']['step_num'] for m in all_mismatches)
+        deepest_failures = [m for m in all_mismatches if m['details']['step_num'] == max_step_num]
+
+    # --- 2. CONSTRUCT THE MASTER SYNTHESIS PROMPT ---
+    prompt = f"""
+    You are a Lead Data Analyst responsible for creating a single, consolidated Root Cause Analysis (RCA) report that summarizes an entire investigation.
+    The investigation may have started from multiple initial issues and found multiple root causes. Your job is to synthesize all the provided raw data into one cohesive report using the given JSON template.
+    Infer high-level fields like 'Severity', 'Business Impact', and 'RCA Type' from the complete context. If data is missing for a field, use "N/A".
+
+    **RAW CONSOLIDATED DATA FROM THE ENTIRE TRACE:**
+
+    *   **List of All Initial Anomalies (L0) that triggered the trace:**
+        ```json
+        {json.dumps(initial_issues, indent=2)}
+        ```
+    
+    *   **Consolidated List of All Deepest Failure Point(s) Identified:**
+        ```json
+        {json.dumps(deepest_failures, indent=2)}
+        ```
         
-        lineage_table_name = table.rsplit('.')[-1]
-        lineage_graph_path = f"{lineage_graphs}/{lineage_table_name}.{column}.gexf"
+    *   **A Representative Lineage Traversal Path:**
+        ```json
+        {json.dumps(lineage_summary_table, indent=2)}
+        ```
 
-        try:
-            lineage_graph = nx.read_gexf(lineage_graph_path)
-            predecessors = get_predecessor_info(node_id, lineage_graph)
+    **INSTRUCTIONS:**
+    Fill out every field in the `FINAL_JSON_TEMPLATE` below by synthesizing the provided data.
+    - **summary.issue_detected**: **Summarize** all initial anomalies into one.
+    - **summary.business_impact**: Infer a single, high-level business impact from all the issues.
+    - **root_cause_analysis.cause_identified**: **Synthesize** all deepest failures sentence. Mention only the table and column names caused this issue. If there are multiple tables and columns, add them as contributing factors to the overall problem. 
+    - **root_cause_analysis.rca_type**: Infer a single, overarching category for all root causes (e.g., 'Multiple Upstream Data Issues', 'Widespread Transformation Logic Failure').
+    - **justification_reasoning**: Create a bulleted list that tells the general story of the investigation, from detection to the isolation of the root cause(s) within 20 words each.
+
+    **FINAL JSON TEMPLATE (Your output MUST be this exact JSON structure):**
+    ```json
+    {{
+      "summary": {{
+        "issue_detected": "A short, synthesized description of all initial issues.",
+        "severity": "High | Medium | Low",
+        "business_impact": "A brief, inferred description of the overall business impact."
+      }},
+      "lineage_traversal": {json.dumps(lineage_summary_table)},
+      "root_cause_analysis": {{
+        "origin_node": "The deepest layer where issues were found, e.g., Layer 2 - Transformation Layer.Mention Layer Number and Table name and if you find it as External alert then mention L0 has the issue",
+        "cause_identified": "A clear, synthesized description of all identified root causes.",
+        "rca_type": "e.g., Multiple Upstream Data Issues",
+        "supporting_evidence": "Plausible evidence you infer from the context, e.g., 'Analysis of multiple source files confirmed data corruption prior to ingestion.'"
+      }},
+      "justification_reasoning": [
+        "A bullet point summarizing the initial detection of anomalies across multiple metrics/tables.",
+        "A bullet point explaining how lineage tracing was used to investigate the upstream pipeline.",
+        "A final bullet point confirming that the root cause(s) were isolated in specific source tables or transformation steps."
+      ]
+    }}
+    ```
+    """
+
+    # 3. INVOKE LLM AND RENDER THE SINGLE REPORT
+    try:
+        report_str = llm.invoke(prompt).content
+        #print('report_str', report_str)
+        match = re.search(r'```json\n(\{.*?\})\n```', report_str, re.DOTALL)
+        if match:
+            cleaned_report_str = match.group(1)
+            report_data = json.loads(cleaned_report_str)
             
-            for pred in predecessors:
-                pred_node_id = f"{pred['prev_table']}.{pred['prev_column']}"
-                
-                # Add edge from predecessor to current node (React Flow format)
-                edges.append({
-                    'id': f"{pred_node_id}->{node_id}",
-                    'source': pred_node_id,
-                    'target': node_id,
-                    'type': 'smoothstep',
-                    'animated': False,
-                    'data': {
-                        'transformation': pred.get('transformation', 'Unknown')
-                    },
-                    'style': {
-                        'stroke': '#6b7280',
-                        'strokeWidth': 2
-                    }
-                })
-                
-                # Recursively process predecessor at next level
-                get_full_lineage(pred['prev_table'], pred['prev_column'], level + 1)
+            # Display the single, consolidated report
+            display_report_on_streamlit(report_data, impacted_datasets)
+            return {"analysis_results": report_data}
+        else:
+            st.error("Could not parse the consolidated report from the LLM response.")
+            return {"analysis_results": {"error": "LLM response parsing failed."}}
+    except Exception as e:
+        st.error(f"An error occurred while generating the consolidated report: {e}")
+        return {"analysis_results": {"error": str(e)}}
 
-        except FileNotFoundError:
-            # This is a source node - no predecessors
-            logger.info(f"Source node found: {node_id}")
-        except Exception as e:
-            logger.error(f"Error building lineage tree for {node_id}: {e}")
+def should_continue_tracing(state: RootCauseAnalysisState):
+    """Decides whether to continue the backward trace or end."""
+    paths = state.get("paths_to_process", [])
+    if not paths:
+        logger.info("No more paths to process. Ending trace.")
+        return "end_trace"
+    # Add a max depth check to prevent infinite loops
+    current_depth = paths[0][0]
+    if current_depth >= 5: # Max 5 layers back
+        logger.warning(f"Reached max trace depth of {current_depth}. Ending trace.")
+        return "end_trace"
 
-    # Build the complete tree for all paths
-    for _, table, column, _ in paths_to_process:
-        get_full_lineage(table, column, level=0)
-
-    # Send lineage tree to frontend via delimited protocol
-    lineage_data = {
-        "type": "LINEAGE_TREE",
-        "nodes": nodes,
-        "edges": edges,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    if WEB_MODE:
-        send_delimited_message(lineage_data)
-    else:
-        print(f"\n{'='*60}")
-        print("🌳 LINEAGE TREE STRUCTURE")
-        print(f"{'='*60}")
-        print(f"Nodes: {len(nodes)}")
-        print(f"Edges: {len(edges)}")
-        for node in nodes:
-            print(f"  - {node['id']}: Level {node['data']['level']}")
-        print(f"{'='*60}\n")
-    
-    logger.info(f"Built lineage tree with {len(nodes)} nodes and {len(edges)} edges")
-    
+    logger.info(f"Continuing trace. {len(paths)} paths to process at depth {current_depth + 1}.")
+    return "continue_trace"
 
 workflow = StateGraph(RootCauseAnalysisState)
-
 # Add nodes
 workflow.add_node("issue_summarizer", anamoly_identifier_node)
 workflow.add_node("rca_analysis_decision", analysis_decision_node)
@@ -1691,252 +1451,125 @@ workflow.add_node("dq_failure_validation", databuck_failure_validation)
 workflow.add_node("parse_dq_query", parse_dq_query_node)
 workflow.add_node("initialize_trace", initialize_trace_node)
 workflow.add_node("lineage_traversal", trace_backward_step_node)
-workflow.add_node("issue_analyser", analyze_results_node)
-
-workflow.add_conditional_edges(
-    "rca_analysis_decision",
-    lambda state : "single_column" if state['analysis_method'] == "Equality" else "multi_column",
-    {"single_column" : "dq_failure_validation", "multi_column" : "parse_dq_query" }
-)
+workflow.add_node("issue_analyser", generate_final_report_node)
 
 # Set up edges
+workflow.set_entry_point("issue_summarizer")
 workflow.add_edge("issue_summarizer", "rca_analysis_decision")
 workflow.add_edge("parse_dq_query", "initialize_trace")
-# workflow.add_edge("dq_failure_validation", "lineage_traversal")
-workflow.add_edge("initialize_trace", "lineage_traversal")
-workflow.add_edge("lineage_traversal", "issue_analyser")
 
-workflow.set_entry_point("issue_summarizer")
+# Branch based on analysis type
+workflow.add_conditional_edges(
+    "rca_analysis_decision",
+    lambda state: "single_column" if state['analysis_method'] == "Equality" else "multi_column",
+    {"single_column": "dq_failure_validation", "multi_column": "parse_dq_query"}
+)
 
+# After initial checks, decide whether to start the trace loop or end
 workflow.add_conditional_edges(
     "dq_failure_validation",
-    lambda state : "continue" if state["initial_check_result"]["is_out_of_bounds"] else "end",
-    {"continue" : "lineage_traversal", "end" : END}
+    lambda state: "start_trace" if state.get("paths_to_process") else "end_analysis",
+    {"start_trace": "lineage_traversal", "end_analysis": "issue_analyser"} # Go to analyser to give final summary
 )
 
 workflow.add_conditional_edges(
     "initialize_trace",
-    lambda state : "continue" if len(state["paths_to_process"]) > 0 else "end",
-    {"continue" : "lineage_traversal", "end" : END}
+    lambda state: "start_trace" if state.get("paths_to_process") else "end_analysis",
+    {"start_trace": "lineage_traversal", "end_analysis": "issue_analyser"} # Go to analyser to give final summary
 )
 
+# The main tracing loop
+workflow.add_conditional_edges(
+    "lineage_traversal",
+    should_continue_tracing,
+    {
+        "continue_trace": "lineage_traversal",  # Loop back to continue tracing
+        "end_trace": "issue_analyser"          # Exit loop and summarize results
+    }
+)
 
+# Final edge to the end
+workflow.add_edge("issue_analyser", END)
+
+# Compile the graph
 app = workflow.compile()
 
-def handle_text_input_conversion(text_input: str) -> Dict[str, Any]:
-    """Convert natural language text input to structured JSON using LLM"""
-    
-    conversion_prompt = f"""
-    You are a data quality assistant. A user has described a data quality issue in natural language.
-    Your task is to convert this description into the structured JSON format required for root cause analysis.
-    
-    User Input: "{text_input}"
-    
-    Based on the user's description, extract or infer the following information and create a JSON object:
-    
-    Required JSON Format:
-    {{
-        "failed_table": "<fully qualified table name if mentioned, otherwise make a reasonable guess>",
-        "failed_column": "<column name mentioned or inferred>",
-        "db_type": "GCP",
-        "validation_query": "<construct a reasonable SQL query based on the issue description>",
-        "execution_date": "<date mentioned or use current date>",
-        "sd_threshold": 3,
-        "expected_std_dev": <estimated standard deviation, default to 100 if not specified>,
-        "expected_value": <estimated expected value, default to 1000 if not specified>,
-        "actual_value": <actual value if mentioned, otherwise estimate based on issue>
-    }}
-    
-    Guidelines:
-    - If table name isn't fully qualified, make it realistic (e.g., "project.dataset.table_name")
-    - For the SQL query, create a reasonable aggregation query that would detect the issue mentioned
-    - Use reasonable defaults for numeric values if not specified
-    - Today's date is {datetime.now().strftime('%Y-%m-%d')}
-    
-    Respond ONLY with valid JSON.
-    """
-    
-    try:
-        llm_response = llm.invoke(conversion_prompt).content
-        
-        # Extract JSON from markdown code blocks if present
-        json_match = re.search(r"```json\n(.*?)\n```", llm_response, re.DOTALL | re.IGNORECASE)
-        if json_match:
-            llm_response = json_match.group(1).strip()
-        
-        converted_input = json.loads(llm_response)
-        
-        send_conversational_message(f"📝 **Converted your description to structured format:**\n```json\n{json.dumps(converted_input, indent=2)}\n```", "info")
-        
-        return converted_input
-        
-    except Exception as e:
-        error_msg = f"Failed to convert text input to JSON: {str(e)}"
-        logger.error(error_msg)
-        send_conversational_message(error_msg, "error")
-        raise Exception(error_msg)
-
-def validate_and_normalize_input(user_input: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate and normalize the input JSON to ensure all required fields are present"""
-    
-    required_fields = {
-        "failed_table": "Unknown Table",
-        "failed_column": "unknown_column", 
-        "validation_query": "SELECT COUNT(*) FROM unknown_table",
-        "expected_value": 1000.0,
-        "expected_std_dev": 100.0,
-        "sd_threshold": 3.0
-    }
-    
-    # Add missing fields with defaults
-    for field, default_value in required_fields.items():
-        if field not in user_input:
-            user_input[field] = default_value
-            logger.warning(f"Missing field '{field}', using default: {default_value}")
-    
-    # Ensure numeric fields are properly typed
-    numeric_fields = ["expected_value", "expected_std_dev", "sd_threshold"]
-    for field in numeric_fields:
-        if field in user_input:
-            try:
-                user_input[field] = float(user_input[field])
-            except (ValueError, TypeError):
-                logger.warning(f"Invalid value for {field}, using default")
-                user_input[field] = required_fields[field]
-    
-    return user_input
-
 def main():
-    """Main function to handle command line execution"""
+    """Main function to handle different input modes"""
     global WEB_MODE
     
-    if len(sys.argv) > 1:
-        # Check if argument is a file path
-        arg = sys.argv[1]
-        if arg.endswith('.json') and os.path.exists(arg):
-            # Reading from JSON file
-            WEB_MODE = False  # Set to console mode for file input
-            try:
-                with open(arg, 'r') as f:
-                    user_input = json.load(f)
-                print(f"🔍 Reading input from file: {arg}")
-                print(f"Input: {json.dumps(user_input, indent=2)}")
-            except Exception as e:
-                print(f"ERROR: Failed to read JSON file {arg}: {e}")
-                sys.exit(1)
-        else:
-            # Try to determine if this is JSON or natural language text
-            try:
-                # First, try to parse as JSON
-                user_input = json.loads(arg)
-                WEB_MODE = True  # Successfully parsed, assume web mode
-                logger.info("Successfully parsed JSON input")
-            except json.JSONDecodeError:
-                # Not valid JSON, check if it's a special command or natural language
-                if arg == "start_introduction":
-                    # Special command to send introduction
-                    WEB_MODE = True
-                    send_initial_bot_introduction()
-                    return
-                elif any(word in arg.lower() for word in ['see', 'low', 'high', 'issue', 'problem', 'deviation', 'anomaly', 'volumes']):
-                    # This looks like natural language text
-                    WEB_MODE = True
-                    send_conversational_message(f"📝 **Received:** {arg}", "user_message")
-                    send_conversational_message(f"🤖 **Processing your description...**", "progress")
-                    
-                    try:
-                        user_input = handle_text_input_conversion(arg)
-                    except Exception as e:
-                        send_conversational_message(f"❌ **Error:** {str(e)}", "error")
-                        sys.exit(1)
-                else:
-                    # JSON parsing failed - try to fix common PowerShell escaping issues
-                    print(f"⚠️  JSON parsing failed for: {repr(arg)}")
-                    print(f"🔧 Attempting to fix PowerShell JSON formatting issues...")
-                    
-                    WEB_MODE = False  # Set to console mode for better error handling
-                    
-                    # Try multiple fixing strategies
-                    fixed_json = arg
-                    
-                    # Strategy 1: Handle missing quotes around property names
-                    try:
-                        # Add quotes around unquoted property names
-                        fixed_json = re.sub(r'(\w+):', r'"\1":', fixed_json)
-                        # Fix any single quotes that might have been introduced
-                        fixed_json = fixed_json.replace("'", '"')
-                        user_input = json.loads(fixed_json)
-                        print("✅ JSON parsing succeeded after fixing property names")
-                        
-                    except json.JSONDecodeError:
-                        # Strategy 2: Try to handle completely mangled JSON
-                        try:
-                            # Remove any extra backslashes that PowerShell might add
-                            fixed_json = arg.replace('\\"', '"').replace("\\'", "'")
-                            user_input = json.loads(fixed_json)
-                            print("✅ JSON parsing succeeded after removing escape characters")
-                            
-                        except json.JSONDecodeError:
-                            # Strategy 3: Handle the case where outer quotes are stripped
-                            try:
-                                if not arg.startswith('{'):
-                                    fixed_json = '{' + arg + '}'
-                                user_input = json.loads(fixed_json)
-                                print("✅ JSON parsing succeeded after adding outer braces")
-                                
-                            except json.JSONDecodeError:
-                                print("❌ ERROR: Cannot parse input after multiple attempts.")
-                                print("")
-                                print("🔍 TROUBLESHOOTING:")
-                                print("PowerShell can mangle JSON strings. Try one of these solutions:")
-                                print("")
-                                print("📁 RECOMMENDED: Use a JSON file instead:")
-                                print("   python adq_agents.py sample_input.json")
-                                print("")
-                                print("💡 OR describe your issue in natural language:")
-                                print("   python adq_agents.py \"I see low volumes of netadds on dla_sum_fact\"")
-                                print("")
-                                print("🐚 OR switch to Command Prompt (cmd) for JSON:")
-                                print('   python adq_agents.py "{\\"failed_column\\": \\"port_in_cnt\\", \\"failed_table\\": \\"table_name\\", \\"validation_query\\": \\"SELECT * FROM table\\", \\"expected_value\\": 1000.0, \\"expected_std_dev\\": 50.0, \\"sd_threshold\\": 3.0}"')
-                                sys.exit(1)
-        
-        # Validate and normalize the input
-        try:
-            user_input = validate_and_normalize_input(user_input)
-        except Exception as e:
-            if WEB_MODE:
-                send_conversational_message(f"❌ **Input validation error:** {str(e)}", "error")
-            else:
-                print(f"❌ ERROR: {str(e)}")
-            sys.exit(1)
-        
-        if WEB_MODE:
-            send_conversational_message("🚀 **Starting Agentic Data Quality Root Cause Analysis...**", "status")
-        
-        # Run the workflow
-        result = app.invoke(user_input)
-        
-        if WEB_MODE:
-            # Send completion message
-            send_conversational_message("🎉 **Root Cause Analysis completed successfully!**", "completion")
-        else:
-            # Console mode final summary
-            print(f"\n🎉 ROOT CAUSE ANALYSIS COMPLETED!")
-            print(f"{'='*60}")
-            if 'final_summary' in result:
-                print(f"Final Summary: {result['final_summary']}")
-            else:
-                print("Final Summary: Root Cause Analysis completed.")
-            print(f"{'='*60}")
+    try:
+        if len(sys.argv) > 1:
+            # Command line argument provided
+            if sys.argv[1] == '--json':
+                # Web mode: Direct JSON from Node.js backend
+                WEB_MODE = True
+                print("🔍 Processing direct JSON input from backend")
                 
-    else:
-        # No command line arguments - send initial bot introduction for web mode
-        WEB_MODE = True
-        send_initial_bot_introduction()
+                if len(sys.argv) < 3:
+                    send_message("error", "JSON data not provided", "Input Error")
+                    sys.exit(1)
+                
+                try:
+                    # Parse JSON directly - no encoding/decoding needed
+                    json_data = sys.argv[2]
+                    user_input = json.loads(json_data)
+                    print(f"✅ Successfully parsed JSON input {user_input}")
+
+                except Exception as e:
+                    send_message("error", f"Failed to parse JSON input: {e}", "Parse Error")
+                    sys.exit(1)
+                    
+            else:
+                # File mode: JSON file path provided
+                WEB_MODE = False  # Console output mode for file input
+                json_file_path = sys.argv[1]
+                print(f"🔍 Reading input from JSON file: {json_file_path}")
+                
+                try:
+                    with open(json_file_path, 'r') as f:
+                        user_input = json.load(f)
+                    print("✅ Successfully loaded JSON from file")
+                except Exception as e:
+                    print(f"❌ Error reading JSON file: {e}")
+                    sys.exit(1)
+        else:
+            print("❌ No input provided. Usage:")
+            print("  python adq_agents.py <json_file>")
+            print("  python adq_agents.py --json '<json_string>'")
+            sys.exit(1)
+
+        # Send initial status
+        send_message("update", "Initializing Agentic Data Quality Root Cause Analysis...", "RCA Process Started")
         
-        # Wait for user input from Node.js
-        # This is handled by the Node.js process calling this script with arguments
-        return
+        # Use the input directly as the initial state (already in correct format from Node.js)
+        initial_state = user_input
+        
+        # Invoke the LangGraph workflow
+        app.invoke(initial_state)
+        
+        # Send final summary
+        send_message("update", "Root Cause Analysis completed.", "Final Summary")
+        
+    except Exception as e:
+        error_message = f"An unexpected error occurred: {e}"
+        send_message("error", error_message, "Error")
+        print(f"❌ {error_message}")
+        if not WEB_MODE:
+            import traceback
+            print(traceback.format_exc())
+        sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        # Re-raise SystemExit to preserve exit codes
+        raise
+    except Exception as e:
+        error_msg = f"An unexpected error occurred: {str(e)}"
+        if WEB_MODE:
+            send_message("Error", "error", error_msg)
+        else:
+            print(f"❌ ERROR: {error_msg}")
+        sys.exit(1)

@@ -1,0 +1,191 @@
+{ "failed_table": "vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.rev_sum_fact_bl_adg", "failed_column": "zero_usage", "db_type": "GCP", "validation_query": "select insert_dt,sum(zero_usage_cycle) as zero_usage from (select CAST(hdp_insert_dt_time AS DATE) as insert_dt, case when sms_cnt < 10 and mms_cnt < 10 then 1 else 0 end as zero_usage_cycle from vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.rev_sum_fact_bl_adg where CAST(hdp_insert_dt_time AS DATE) = '2025-07-01') group by 1", "execution_date" : "2025-07-01", "sd_threshold": 3, "expected_std_dev": 20, "expected_value": 200, "actual_value": 800, "stream" : true }
+🤖 ADQ
+On July 1st, 2025, the 'zero_usage' value in the 'rev_sum_fact_bl_adg' table was unexpectedly high. The actual value of 800 fell outside the expected range of 200 +/- 3 standard deviations.
+🤖 ADQ
+Based on provided inputs, multiple columns are involved in this validation metric, we'll run a statistical check at the L0 layer to pinpoint the problematic column.
+🤖 ADQ
+Based on your inputs, here are the tables, columns, filters, group by, and aggregation functions found.
+{
+"target_tables":{
+"vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.rev_sum_fact_bl_adg":[
+0:"sms_cnt"
+1:"mms_cnt"
+]
+}
+"filters":[
+0:"CAST(hdp_insert_dt_time AS DATE) = '2025-07-01'"
+]
+"group_by":[
+0:"insert_dt"
+]
+"aggregation_function":"SUM"
+}
+🤖 ADQ
+Identifying columns for root cause analysis and performing initial L0 checks...
+🤖 ADQ
+Analysing the data on L0 layer for sms_cnt
+
+Reasoning: Value 800.00 is outside the 3-sigma range [200.00, 200.00].
+
+SQL query for actual value:
+SELECT
+    insert_dt,
+    SUM(CASE WHEN sms_cnt < 10 THEN 1 ELSE 0 END) AS sms_cnt
+FROM
+    (
+        SELECT
+            CAST(last_cycle_dt AS DATE) AS insert_dt,
+            sms_cnt
+        FROM
+            `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.rev_sum_fact_bl_adg`
+        WHERE
+            CAST(last_cycle_dt AS DATE) = '2025-07-01'
+    )
+GROUP BY
+    insert_dt
+
+
+SQL query for SD and EV:
+SELECT
+    AVG(sms_cnt) AS expected_value,
+    STDDEV(sms_cnt) AS std_dev
+FROM
+    (
+        SELECT
+            insert_dt,
+            SUM(CASE WHEN sms_cnt < 10 THEN 1 ELSE 0 END) AS sms_cnt
+        FROM
+            (
+                SELECT
+                    CAST(last_cycle_dt AS DATE) AS insert_dt,
+                    sms_cnt
+                FROM
+                    `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.rev_sum_fact_bl_adg`
+                WHERE
+                    CAST(last_cycle_dt AS DATE) BETWEEN DATE_SUB('2025-07-01', INTERVAL 30 DAY) AND DATE_SUB('2025-07-01', INTERVAL 1 DAY)
+            )
+        GROUP BY
+            insert_dt
+    )
+
+
+A significant deviation has been detected in the sms_cnt column's values over the past month. A lineage trace is necessary to uncover the root cause.
+🤖 ADQ
+Analysing the data on L0 layer for mms_cnt
+
+Reasoning: Value 800.00 is outside the 3-sigma range [200.00, 200.00].
+
+SQL query for actual value:
+SELECT
+    insert_dt,
+    SUM(CASE WHEN mms_cnt < 10 THEN 1 ELSE 0 END) AS mms_cnt
+FROM
+    (
+        SELECT
+            CAST(last_cycle_dt AS DATE) AS insert_dt,
+            mms_cnt
+        FROM
+            `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.rev_sum_fact_bl_adg`
+        WHERE
+            CAST(last_cycle_dt AS DATE) = '2025-07-01'
+    )
+GROUP BY
+    insert_dt
+
+
+SQL query for SD and EV:
+SELECT
+    AVG(mms_cnt) AS expected_value,
+    STDDEV(mms_cnt) AS std_dev
+FROM (
+    SELECT
+        insert_dt,
+        SUM(CASE WHEN mms_cnt < 10 THEN 1 ELSE 0 END) AS mms_cnt
+    FROM (
+        SELECT
+            CAST(last_cycle_dt AS DATE) AS insert_dt,
+            mms_cnt
+        FROM
+            `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.rev_sum_fact_bl_adg`
+        WHERE
+            CAST(last_cycle_dt AS DATE) BETWEEN DATE_SUB('2025-07-01', INTERVAL 30 DAY) AND DATE_SUB('2025-07-01', INTERVAL 1 DAY)
+    )
+    GROUP BY
+        insert_dt
+)
+
+
+A significant deviation has been detected in the mms_cnt column's values over the past month. A lineage trace is necessary to uncover the root cause.
+🤖 ADQ
+Tracing one layer back in the lineage and comparing data values...
+🤖 ADQ
+Traversing through lineage for sms_cnt
+
+Layer Number: 1
+
+Table Name: vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cycle_usage_adg
+
+Column Name: usg_call_cnt
+
+SQL query:
+SELECT
+    insert_dt,
+    SUM(CASE WHEN sms_cnt < 10 THEN 1 ELSE 0 END) AS sms_cnt
+FROM
+    (
+        SELECT
+            CAST(mt.CYCLE_DT AS DATE) AS insert_dt,
+            (
+                SELECT
+                    SUM(COALESCE((CASE WHEN C.FEAT_CTGRY_CD = 'SMS' THEN CAST(A.USG_CALL_CNT AS BIGNUMERIC) ELSE 0
+                        END),
+                        0
+                    ))
+                FROM
+                    `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.mtn_bill_metrics_adg` AS mt_inner
+                LEFT JOIN
+                    `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cycle_usage_adg` AS A
+                ON
+                    CAST(A.CYCLE_DT AS DATE) = mt_inner.CYCLE_DT
+                    AND A.CUST_LINE_SEQ_ID = mt_inner.CUST_LINE_SEQ_ID
+                    AND A.cust_id = mt_inner.cust_id
+                    AND A.sor_id = mt_inner.sor_id
+                    AND mt_inner.acct_num = A.acct_num
+                    AND mt_inner.mtn = A.mtn
+                LEFT JOIN
+                    `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.usage_type_adg` AS C
+                ON
+                    A.SOR_ID = C.SOR_ID
+                    AND A.USG_TYPE_ID = C.USG_TYPE_ID
+                    AND C.feat_ctgry_cd IN ('SMS', 'MMS', 'VCE', 'VM', 'PTT')
+                LEFT JOIN
+                    `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.market_hist_adg` AS M
+                ON
+                    A.SOR_ID = M.SOR_ID
+                    AND TRIM(UPPER(A.MKT_CD)) = TRIM(UPPER(M.MKT_CD))
+                    AND CAST(A.CYCLE_DT AS DATE) BETWEEN M.EFF_DT AND COALESCE(M.EXP_DT, DATE '1991-12-31')
+                WHERE
+                    mt_inner.cycle_dt = mt.cycle_dt
+                    AND mt_inner.mtn = mt.mtn
+                    AND mt_inner.SOR_ID = mt.SOR_ID
+                    AND mt_inner.CUST_ID = mt.CUST_ID
+                    AND mt_inner.CUST_LINE_SEQ_ID = mt.CUST_LINE_SEQ_ID
+                GROUP BY
+                    mt_inner.SOR_ID,
+                    mt_inner.CUST_ID,
+                    mt_inner.mtn,
+                    mt_inner.CUST_LINE_SEQ_ID,
+                    mt_inner.CYCLE_DT
+            ) AS sms_cnt
+        FROM
+            (SELECT DISTINCT * FROM `vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.mtn_bill_metrics_adg`) AS mt
+        WHERE
+            CAST(mt.CYCLE_DT AS DATE) = '2025-07-01'
+    )
+GROUP BY
+    insert_dt
+
+
+
+Inference: Data consistent at L1 (vz-it-np-gk1v-dev-cwlspr-0.vzw_uda_prd_tbls.cycle_usage_adg.usg_call_cnt):
+Reason: Value is within its historical statistical range.

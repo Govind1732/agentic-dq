@@ -1,0 +1,98 @@
+Agentic Data Quality Objectives
+Rule Discovery and Configuration: Suggest relevant rules (Technical, Business, Statistical) with a proper priority sequence, followed by integration with Databuck for implementation.
+
+Anomaly Detection and Root Cause Analysis: Identify anomalies, find the root cause, raise an alert, and suggest a data quality rule to be implemented.
+
+Rule Optimization and Maintenance: Continuously improve rules by recommending threshold adjustments based on data drifts, usage patterns, and historical data issues.
+
+Agents Required to Achieve Data Quality Objectives
+Onboarding Data Quality:
+
+Critical Data Element Identification Agent: Identifies and prioritizes critical data elements to focus data quality efforts.
+
+Data Quality Rule Recommendation Agent: Recommends appropriate data quality rules based on metadata.
+
+Data Quality Rule Generation: Generates the rules.
+
+Execution of Data Quality:
+
+Databuck executes the identified rules in the host environment.
+
+Monitoring of Data Quality:
+
+Databuck monitors the rules based on a fixed schedule and generates alerts.
+
+Root Cause Analysis:
+
+RCA Agent: Detects the cause and location of the data quality issue.
+
+Rule Optimization and Maintenance:
+
+Rule Optimizer Agent: Fine-tunes rules based on historical trends and usage patterns.
+
+RCA Agent: Scope
+The RCA Agent is an autonomous tool that automatically identifies the root cause of Databuck-flagged data quality issues by analyzing data lineage, BigQuery, and operational metadata.
+
+Problems the RCA agent can help identify:
+
+Data Quality Issues:
+
+Data Freshness: Outdated or stale data.
+
+Data Volume: Unexpected increases or decreases in data flow.
+
+Data Distribution: Values not fitting normal patterns.
+
+Data Inaccuracies/Errors: Incorrect or corrupt data values.
+
+Schema Changes: Unanticipated structural changes in data.
+
+Code & Logic Issues:
+
+Bugs in Transformation Logic: Errors in ETL (Extract, Transform, Load) or data processing code.
+
+The first version of the RCA agent will focus on issues in the In-Market Churn Model for MVP, specifically addressing data distribution issues and performing column lineage analysis on data residing in Google BigQuery. The scope is restricted to columns where lineage is available.
+
+Solution Flow: Root Cause Analysis
+RCA Orchestrator Agent: Starts the process by parsing the user's DQ validation SQL query and setting up the initial state for tracing each target table and column.
+
+Issue Summarization Agent: Understands the Databuck issue and the associated context to describe the problem.
+
+Graph Traversal Agent: Iteratively uses the data lineage graph to identify immediate upstream tables and columns.
+
+Lineage Extraction Agent: Provides dependency information detailing which upstream tables and columns feed into a given downstream table and column.
+
+Generate SQL Agent: Constructs specific SQL queries to retrieve relevant data from identified tables and columns.
+
+Big Query Agent: A bridge enabling the RCA agent to query and retrieve data from BigQuery for analysis.
+
+Issue Analyzer Agent: Examines the collected data and query outputs across all lineage steps to identify discrepancies and pinpoint the potential cause of the data quality issue.
+
+Result Summarizer Agent: Assimilates the entire finding and converts it into a human-readable form.
+
+RCA and Agentic AI
+RCA agents are "agentic" on the virtue of traits like autonomy, decision-making, and adaptability.
+
+Autonomy and Decision-Making: They are self-directed, perceiving a problem, reasoning about the necessary steps, and dynamically acting to test hypotheses.
+
+Intelligent Task Orchestration: They break down complex problems, choose the best actions, and iteratively work towards a solution. The "checks to perform" are not static rules but are intelligently generated and adapted in real-time.
+
+Outcome Interpretation and Summarization: The system interprets the full context of the lineage graph and the results of recursive queries to provide a comprehensive, meaningful summary of where the failure originated.
+
+RCA Approach Comparison
+Monte Carlo, Acceldata, & Pantomath:
+
+These tools primarily rely on statistical patterns, operational metrics, and query execution logs for correlation.
+
+Their strength lies in identifying anomalies and operational issues, but they may lack the ability to perform deep, content-driven validation to pinpoint the exact transformation logic causing the error.
+
+They may not perform column-level lineage analysis as a specific capability for RCA.
+
+AI Components in the RCA Use Cases
+RCA Agent: Uses LangGraph to orchestrate the entire RCA process, from parsing queries to tracing lineage and analyzing results.
+
+Lineage Agent: Programmatically accesses and interprets data lineage.
+
+Dynamic SQL Generation: Leverages LLMs to dynamically generate SQL queries for each lineage step, adapting to diverse transformation logic.
+
+Analysis Node: Automatically compares data outputs at each lineage step, performing direct data comparisons to pinpoint the exact stage where a data quality issue originated.

@@ -1,0 +1,149 @@
+Refined Agentic DQ Workflow
+This document provides a detailed, step-by-step breakdown of the RCA Agent's workflow, explaining the purpose of each node from the adq_agents.py script and its corresponding output in the conversational UI.
+
+Phase 1: Initiation and Planning
+This phase is about understanding the user's request and preparing for the investigation.
+
+1. Issue Summarization
+
+Node: anamoly_identifier_node
+
+Purpose: This is the entry point. The agent takes the user's input (either a JSON object or a natural language query) and uses the LLM to create a simple, human-readable summary of the problem.
+
+Chatbot Response: "I got your issue. Let me start analyzing the data to identify the root cause."
+
+2. Strategic Decision
+
+Node: analysis_decision_node
+
+Purpose: The agent acts as a strategist, analyzing the user's validation_query to determine if the failure is caused by a single column or a complex rule involving multiple columns. This decision determines which path the investigation will take.
+
+Chatbot Response: No direct message is sent here, but this node's decision is critical for the next steps.
+
+Phase 2: L0 Investigation (The Final Table)
+This phase focuses on confirming the anomaly on the table where the error was first reported (Layer 0).
+
+Path A: Single-Column Issue
+
+3A. Initial Validation
+
+Node: databuck_failure_validation
+
+Purpose: This agent performs a focused statistical check on the single problematic column to confirm that its value is a significant deviation from the historical trend.
+
+Chatbot Response: "Looking for deviations in the record count..." followed by "Deviation persists... Proceeding with trend analysis."
+
+Path B: Multi-Column Issue
+
+3B. Query Deconstruction
+
+Node: parse_dq_query_node
+
+Purpose: For complex rules, this agent uses the LLM to deconstruct the SQL query and identify all the individual columns that contribute to the final metric.
+
+Chatbot Response: No direct message, but its output is used by the next node.
+
+4B. Multi-Column Validation
+
+Node: initialize_trace_node
+
+Purpose: This agent performs a statistical check on each of the columns identified in the previous step to pinpoint which specific one is the primary cause of the failure.
+
+Chatbot Response: A series of messages, one for each column being checked, such as "Analysing historical trends for SMS & MMS counts..."
+
+Phase 3: The Investigation Loop
+This is the core of the RCA process, where the agent traces the data lineage backward.
+
+5. Lineage Tracing & Upstream Analysis
+
+Node: trace_backward_step_node
+
+Purpose: This is the "Detective" agent. It runs in a loop. In each iteration, it takes a problematic column, moves one step backward in the data lineage to its parent table, and generates a new SQL query to check the data at that upstream layer.
+
+Chatbot Response: This node generates the step-by-step updates seen in the conversation, such as:
+
+"Checking for SMS Count"
+
+"Identified the sms_cnt column originated from..."
+
+"Results from count checks for the previous date: The deviation in sms_cnt < 10 originates from..."
+
+The Loop: After this node runs, the system checks if there are more upstream tables to investigate. If yes, it calls trace_backward_step_node again. If no, it proceeds to the final phase.
+
+Phase 4: Final Reporting
+This is the concluding phase where the agent presents its findings.
+
+6. Final Summary Generation
+
+Node: generate_final_report_node (previously issue_analyser)
+
+Purpose: This is the final agent in the workflow. It synthesizes all the findings from the entire investigation into a single, easy-to-understand conclusion.
+
+
+Of course. Here is a detailed description of the "AgenticDQV3_executive" presentation, explaining how the RCA Agent works by mapping the Python script's logic to the conversational flow shown in the PDF.
+
+### **Slide 1: What is Agentic DQ? The Big Picture**
+
+The "AgenticDQV3_executive" document outlines a sophisticated AI-powered system designed to automate **Data Quality (DQ)** management at Verizon.
+
+The main goal is to move from a manual, reactive process of fixing data errors to an autonomous, proactive one. Instead of data engineers spending hours or days investigating problems, this system uses a team of intelligent **AI "agents"** to do the work automatically.
+
+The core of this system is the **Root Cause Analysis (RCA) Agent**, which is designed to not just find a data error, but to automatically figure out *why* and *where* it happened in Verizon's complex data pipelines.
+
+---
+### **Slide 2: The RCA Agent's Mission: A Conversational Detective**
+
+The main aim of the RCA Agent is to act like an expert data detective that you can talk to. A user, like a data analyst, starts a conversation by describing a data quality issue. The agent then begins an investigation, showing its work step-by-step in the chat, just like in the `Conversation.pdf`.
+
+The entire process is managed by a workflow engine in the `adq_agents.py` script, which calls different "agent" functions (nodes) in a logical sequence to solve the problem.
+
+---
+### **Slide 3: Step 1 - Understanding the Problem**
+
+**What the User Sees:** The chatbot acknowledges the user's request, finds the relevant data validation rule, and performs an initial check on the final table (Layer 0) to confirm the issue.
+
+
+
+**Python Nodes Executed:**
+
+1.  **`anamoly_identifier_node` (The Summarizer):**
+    * **Purpose:** This is the first agent. It takes the user's input (e.g., "investigate a deviation in 'zero-usage cycles'...") and uses an LLM to create a simple, human-readable summary.
+    * **Response:** It generates the first message: *"I got your issue. Let me start analyzing the data..."*
+
+2.  **`analysis_decision_node` (The Strategist):**
+    * **Purpose:** This agent quickly analyzes the user's request to see if it involves a simple, single-column issue or a complex, multi-column business rule. This decision determines which path the investigation takes next.
+
+3.  **`initialize_trace_node` or `databuck_failure_validation` (The L0 Investigators):**
+    * **Purpose:** These agents perform the first real data analysis on the final table where the error was reported. They run a statistical check to confirm that the reported issue is a genuine deviation from the historical trend.
+    * **Response:** These nodes generate the final messages in this section, like *"Looking for deviations in the record count..."* and *"Deviation persists... Proceeding with trend analysis."*
+
+---
+### **Slide 4: Step 2 - The Investigation & Lineage Trace**
+
+**What the User Sees:** The chatbot announces it's checking upstream dependencies. It then shows the data lineage as a graph and gives a play-by-play of its investigation into each parent column, explaining its findings at each step.
+
+
+
+**Python Node Executed:**
+
+* **`trace_backward_step_node` (The Detective):**
+    * **Purpose:** This is the core investigative agent. It runs in a **loop**, moving one step backward in the data lineage at a time. In each loop, it generates a new SQL query to check the data at the upstream layer.
+    * **Response:** This single node is responsible for generating all the messages in this section. For each column it investigates (like `sms_cnt`), it sends a series of updates:
+        1.  A message announcing which column it's checking (*"Checking for SMS Count"*).
+        2.  A message explaining where that column came from (*"Identified the sms_cnt column originated from..."*).
+        3.  A final message with the results of its analysis (*"The deviation in sms_cnt... originates from the usg_call_cnt column..."*).
+
+---
+### **Slide 5: Step 3 - The Conclusion**
+
+**What the User Sees:** The chatbot provides a final, conclusive summary of the root cause and then offers the user a set of next actions.
+
+
+
+**Python Node Executed:**
+
+* **`generate_final_report_node` (The Reporter):**
+    * **Purpose:** This is the final agent in the workflow. Its job is to synthesize all the findings from the entire investigation into a single, easy-to-understand conclusion.
+    * **Response:** This node generates the "Final Root Cause Summary" message. After this, the Python script's work is done, and the frontend displays the follow-up action buttons.
+
+Chatbot Response: This node generates the "Final Root Cause Summary" message, such as "The usg_call_cnt column in the cycle_usage table values has deviated from its historical trend..."

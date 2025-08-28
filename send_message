@@ -1,0 +1,69 @@
+# file: adq_runtime.py  (new)
+import sys, json, re
+from typing import Dict, Any, Callable
+
+def send_message(message_type: str, content: str, title: str = "", node_name: str = "", step: str = "") -> None:
+    """
+    Emit one chat bubble to Node via stdout (one JSON per line).
+    Node forwards this over WebSocket to React immediately.
+    """
+    payload = {
+        "type": message_type,   # e.g. "node_response", "error", "progress"
+        "title": title,         # short heading e.g. "Validation Rule Check"
+        "node": node_name,      # the node that sent this
+        "step": step,           # optional step id: "1", "2", "3", "final"
+        "content": content      # markdown-friendly text
+    }
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+def stream_numbered_steps(llm, prompt: str, node_name: str,
+                          on_line: Callable[[str, str], None]) -> str:
+    """
+    Stream LLM output and emit each numbered line (1..5) as soon as it completes.
+    - on_line(step_no, line_text) is called for each parsed step.
+    Returns the entire streamed text.
+    """
+    buf, full = "", ""
+    for chunk in llm.stream(prompt):         # VegasChatLLM.stream(...)
+        delta = getattr(chunk, "content", None) or getattr(chunk, "text", None) or ""
+        if not delta:
+            continue
+        buf += delta
+        full += delta
+
+        while "\n" in buf:
+            line, buf = buf.split("\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+
+            m = re.match(r"^\s*([1-5])\.\s*(.*)$", line)
+            if m:
+                step_no, text = m.group(1), m.group(2).strip()
+                on_line(step_no, f"{step_no}. {text}")
+    # flush any trailing one-liner that looks like a step
+    m = re.match(r"^\s*([1-5])\.\s*(.*)$", buf.strip())
+    if m:
+        step_no, text = m.group(1), m.group(2).strip()
+        on_line(step_no, f"{step_no}. {text}")
+        full += ("\n" + buf)
+    return full
+
+send_message(
+        "node_response",
+        "I got your issue. Let me start analyzing the data to identify the root cause.",
+        title="Anomaly Identification",
+        node_name="anamoly_identifier_node",
+        step="1a"
+    )
+
+    # Figma bubble 2 (show user we’re checking rules while LLM warms up)
+    send_message(
+        "node_response",
+        "Checking the rules that are involved in this column which still persist or not...",
+        title="Validation Rule Check",
+        node_name="anamoly_identifier_node",
+        step="1b"
+    )

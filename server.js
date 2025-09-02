@@ -1,447 +1,798 @@
-import express from "express";
-import cors from "cors";
-import { Server } from "socket.io";
-import http from "http";
-import { PythonShell } from "python-shell";
-import path from "path";
-import { fileURLToPath } from "url";
+// import express from 'express';
+// import cors from 'cors';
+// import { createServer } from 'http';
+// import { Server } from 'socket.io';
+// import { spawn } from 'child_process';
+// import path from 'path';
+// import { fileURLToPath } from 'url';
+
+// const __filename = fileURLToPath(import.meta.url);
+// const __dirname = path.dirname(__filename);
+
+// // Initialize Express app
+// const app = express();
+// const server = createServer(app);
+
+// // Setup Socket.IO with CORS
+// const io = new Server(server, {
+//   cors: {
+//     origin: "*",
+//     methods: ["GET", "POST"]
+//   }
+// });
+
+// // Middleware
+// app.use(cors({ origin: "*" }));
+// app.use(express.json());
+
+// // Store active Python processes
+// const activePythonProcesses = new Map();
+
+// // Socket.IO connection handling
+// io.on('connection', (socket) => {
+//   console.log(`Client connected: ${socket.id}`);
+
+//   socket.on('disconnect', (reason) => {
+//     console.log(`Client disconnected: ${socket.id} | Reason: ${reason}`);
+    
+//     // Clean up any active Python processes for this socket
+//     if (activePythonProcesses.has(socket.id)) {
+//       const process = activePythonProcesses.get(socket.id);
+//       if (process && !process.killed) {
+//         process.kill('SIGTERM');
+//       }
+//       activePythonProcesses.delete(socket.id);
+//     }
+//   });
+
+//   // Handle acknowledgment message from frontend
+//   socket.on('acknowledgment', (userData) => {
+//     console.log(`[${socket.id}] Received acknowledgment message:`, userData);
+//     socket.emit('acknowledgment', {
+//       type: 'acknowledgment',
+//       content: `${userData?.content} received! Ready to start RCA process.`,
+//       timestamp: new Date().toISOString()
+//     });
+//   });
+
+//   // Handle start process request from frontend
+//   socket.on('start_process', (userData) => {
+//     console.log(`[${socket.id}] Starting RCA process for:`, userData);
+    
+//     // Check if process is already running for this socket
+//     if (activePythonProcesses.has(socket.id)) {
+//       console.log(`[${socket.id}] Process already running for this socket, ignoring duplicate request`);
+//       return;
+//     }
+
+//     // Extract and parse the actual data from the wrapper
+//     let actualData = userData?.userMessage?.content || userData;
+
+//     startRCAProcess(socket, actualData);
+//   });
+
+//   // Handle process termination request
+//   socket.on('terminate_process', () => {
+//     console.log(`[${socket.id}] Termination requested`);
+//     if (activePythonProcesses.has(socket.id)) {
+//       const process = activePythonProcesses.get(socket.id);
+//       if (process && !process.killed) {
+//         process.kill('SIGTERM');
+//         activePythonProcesses.delete(socket.id);
+//         socket.emit('process_terminated', {
+//           type: 'info',
+//           content: 'RCA process terminated successfully.',
+//           timestamp: new Date().toISOString()
+//         });
+//       }
+//     }
+//   });
+// });
+
+// // HTTP POST endpoint for starting RCA
+// app.post('/api/start-rca', (req, res) => {
+//   console.log('RCA process started via HTTP:', req.body);
+//   io.emit('process_started', req.body);
+//   res.json({ status: 'RCA process started', data: req.body });
+// });
+
+// // Function to start the Python RCA process
+// function startRCAProcess(socket, userData) {
+//   try {
+//     console.log(`[${socket.id}] Starting Python RCA process...`);
+
+//     // Python script path - using the streaming version
+//     const pythonScriptPath = path.join(__dirname, '..', 'adq-python-script', 'scripts', 'streaming_agentic_dq.py');
+//     const venvPythonPath = path.join(__dirname, '..', 'adq-python-script', '.venv', 'Scripts', 'python.exe');
+    
+//     // Spawn Python process
+//     const pythonProcess = spawn(venvPythonPath, [pythonScriptPath], {
+//       stdio: ['pipe', 'pipe', 'pipe'],
+//       cwd: path.dirname(pythonScriptPath)
+//     });
+
+//     // Store the process for cleanup
+//     activePythonProcesses.set(socket.id, pythonProcess);
+    
+//     console.log(`[${socket.id}] Python process started. Active processes: ${activePythonProcesses.size}`);
+
+//     // Process timeout (10 minutes for complex RCA)
+//     const processTimeout = setTimeout(() => {
+//       console.log(`[${socket.id}] Killing Python process due to timeout`);
+//       if (activePythonProcesses.has(socket.id)) {
+//         pythonProcess.kill('SIGTERM');
+//         activePythonProcesses.delete(socket.id);
+//         socket.emit('error', {
+//           type: 'error',
+//           message: 'Process timed out after 10 minutes. Please try again.',
+//           timestamp: new Date().toISOString()
+//         });
+//       }
+//     }, 10 * 60 * 1000);
+
+//     // Send initial acknowledgment
+//     socket.emit('acknowledgment', {
+//       type: 'acknowledgment',
+//       content: 'Starting Agentic Data Quality analysis...',
+//       timestamp: new Date().toISOString()
+//     });
+
+//     // Send input data to Python process
+//     pythonProcess.stdin.write(JSON.stringify(userData));
+//     pythonProcess.stdin.end();
+
+//     // Handle Python script output with line-by-line JSON parsing
+//     let lineBuffer = '';
+
+//     pythonProcess.stdout?.on('data', (data) => {
+//       lineBuffer += data.toString();
+      
+//       // Process complete lines
+//       const lines = lineBuffer.split('\n');
+//       lineBuffer = lines.pop() || ''; // Keep incomplete line in buffer
+      
+//       for (const line of lines) {
+//         const trimmedLine = line.trim();
+//         if (!trimmedLine) continue;
+        
+//         try {
+//           const jsonMessage = JSON.parse(trimmedLine);
+//           console.log(`[${socket.id}] Received JSON:`, jsonMessage);
+          
+//           // Route different message types appropriately
+//           switch (jsonMessage.type) {
+//             case 'progress':
+//               socket.emit('progress', jsonMessage);
+//               break;
+//             case 'analysis_result':
+//               socket.emit('analysis_result', jsonMessage);
+//               break;
+//             case 'table_data':
+//               socket.emit('table_data', jsonMessage);
+//               break;
+//             case 'final_report':
+//               socket.emit('final_report', jsonMessage);
+//               break;
+//             case 'bot':
+//             case 'user':
+//               socket.emit('message', jsonMessage);
+//               break;
+//             case 'error':
+//               socket.emit('error', jsonMessage);
+//               break;
+//             default:
+//               // Generic message handling
+//               socket.emit('partialResult', jsonMessage);
+//           }
+//         } catch (parseError) {
+//           console.error(`[${socket.id}] JSON parse error for line: "${trimmedLine}"`, parseError);
+//           // Don't emit parsing errors to frontend to avoid spam
+//         }
+//       }
+//     });
+
+//     // Handle stderr for Python errors
+//     pythonProcess.stderr?.on('data', (data) => {
+//       const errorOutput = data.toString();
+//       console.error(`[${socket.id}] Python stderr:`, errorOutput);
+      
+//       // Only emit significant errors, filter out warnings
+//       if (errorOutput.includes('ERROR') || errorOutput.includes('CRITICAL')) {
+//         socket.emit('error', {
+//           type: 'error',
+//           message: `Python error: ${errorOutput}`,
+//           timestamp: new Date().toISOString()
+//         });
+//       }
+//     });
+
+//     // Handle Python script completion
+//     pythonProcess.on('close', (code, signal) => {
+//       console.log(`[${socket.id}] Python script finished with code: ${code}, signal: ${signal}`);
+      
+//       clearTimeout(processTimeout);
+//       activePythonProcesses.delete(socket.id);
+//       console.log(`[${socket.id}] Process cleaned up. Active processes: ${activePythonProcesses.size}`);
+      
+//       if (code === 0) {
+//         socket.emit('process_completed', {
+//           type: 'completion',
+//           content: 'RCA analysis completed successfully.',
+//           timestamp: new Date().toISOString()
+//         });
+//       } else if (code !== null && code !== 0) {
+//         socket.emit('error', {
+//           type: 'error',
+//           message: `Python script exited with error code: ${code}`,
+//           timestamp: new Date().toISOString()
+//         });
+//       }
+//     });
+
+//     // Handle Python script errors
+//     pythonProcess.on('error', (error) => {
+//       console.error(`[${socket.id}] Python script error:`, error);
+//       clearTimeout(processTimeout);
+      
+//       socket.emit('error', {
+//         type: 'error',
+//         message: `Python script error: ${error.message}`,
+//         timestamp: new Date().toISOString()
+//       });
+      
+//       activePythonProcesses.delete(socket.id);
+//     });
+
+//     // Handle process exit
+//     pythonProcess.on('exit', (code, signal) => {
+//       console.log(`[${socket.id}] Python process exited with code: ${code}, signal: ${signal}`);
+//       clearTimeout(processTimeout);
+//       activePythonProcesses.delete(socket.id);
+//     });
+
+//   } catch (error) {
+//     console.error(`[${socket.id}] Error starting Python process:`, error);
+    
+//     socket.emit('error', {
+//       type: 'error',
+//       message: `Failed to start RCA process: ${error.message}`,
+//       timestamp: new Date().toISOString()
+//     });
+//   }
+// }
+
+// // Health check endpoint
+// app.get('/health', (req, res) => {
+//   res.json({ 
+//     status: 'healthy', 
+//     timestamp: new Date().toISOString(),
+//     activeProcesses: activePythonProcesses.size
+//   });
+// });
+
+// // Get active processes count
+// app.get('/api/status', (req, res) => {
+//   res.json({ 
+//     activeProcesses: activePythonProcesses.size,
+//     timestamp: new Date().toISOString()
+//   });
+// });
+
+// // Start the server
+// const PORT = process.env.PORT || 3001;
+// const HOST = process.env.HOST || '127.0.0.1';
+
+// server.listen(PORT, HOST, () => {
+//   console.log(`🚀 Agentic DQ Backend Server running on http://${HOST}:${PORT}`);
+//   console.log(`📡 WebSocket server ready for connections`);
+//   console.log(`🔗 Frontend should connect to: http://${HOST}:${PORT}`);
+// });
+
+// // Graceful shutdown
+// process.on('SIGTERM', handleShutdown);
+// process.on('SIGINT', handleShutdown);
+
+// function handleShutdown() {
+//   console.log('Shutting down server...');
+  
+//   // Kill all active Python processes
+//   activePythonProcesses.forEach((process, socketId) => {
+//     console.log(`Terminating Python process for socket: ${socketId}`);
+//     if (process && !process.killed) {
+//       process.kill('SIGTERM');
+//     }
+//   });
+  
+//   activePythonProcesses.clear();
+  
+//   server.close(() => {
+//     console.log('Server closed.');
+//     process.exit(0);
+//   });
+// }
+
+import express from 'express';
+import cors from 'cors';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import { spawn } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Initialize Express app
 const app = express();
-const server = http.createServer(app);
-
-// Middleware
-app.use(cors({ origin: "*" }));
-app.use(express.json());
+const server = createServer(app);
 
 // Setup Socket.IO with CORS
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"],
-  },
+    methods: ["GET", "POST"]
+  }
 });
 
-// Store active Python processes
-const activePythonProcesses = new Map();
+// Middleware
+app.use(cors({ origin: "*" }));
+app.use(express.json());
+
+// Store active sessions and conversations
+const activeProcesses = new Map();
+const conversations = new Map();
+const userSessions = new Map();
 
 // Socket.IO connection handling
-io.on("connection", (socket) => {
+io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
-  const welcomeMessage = {
-    role: "bot",
-    content: `Hi Govind, great to see you!👋
 
-I can quickly find the root cause of your data issues using AI-driven analysis.
+  // Initialize user session
+  userSessions.set(socket.id, {
+    conversations: [],
+    currentConversation: null
+  });
 
-Describe your issue, e.g.:
-1. "I see low volumes of netadds on dla_sum_factB"
-
-2. Share an issue details similar to this
-\`\`\`json
-{
-  "table_name": "<Fully qualified table name>",
-  "column_name": "<Column name>",
-  "db_type": "<GCP/Teradata>",
-  "failed_rule": "<SQL that contains the validation>",
-  "threshold_of_Z_Score": "",
-  "expected_SD": "",
-  "expected_value": "",
-  "actual_value": "",
-  "Start_Date": "",
-  "End_Date": ""
-}
-\`\`\``,
-    timestamp: new Date().toISOString(),
-  };
-  socket.emit("welcomeMessage", JSON.stringify(welcomeMessage));
-  socket.on("disconnect", (reason) => {
+  socket.on('disconnect', (reason) => {
     console.log(`Client disconnected: ${socket.id} | Reason: ${reason}`);
+    
+    // Clean up active processes
+    if (activeProcesses.has(socket.id)) {
+      const process = activeProcesses.get(socket.id);
+      if (process && !process.killed) {
+        process.kill('SIGTERM');
+      }
+      activeProcesses.delete(socket.id);
+    }
+    
+    // Clean up session
+    userSessions.delete(socket.id);
+  });
 
-    // Clean up any active Python processes for this socket
-    if (activePythonProcesses.has(socket.id)) {
-      activePythonProcesses.get(socket.id).kill();
-      activePythonProcesses.delete(socket.id);
+  // Handle new conversation creation
+  socket.on('create_new_conversation', (data) => {
+    const conversationId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const conversation = {
+      id: conversationId,
+      title: data.title || 'New Conversation',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      messages: [],
+      type: data.type || 'chat' // 'chat' or 'rca'
+    };
+
+    conversations.set(conversationId, conversation);
+    
+    const userSession = userSessions.get(socket.id);
+    userSession.conversations.unshift(conversation);
+    userSession.currentConversation = conversationId;
+
+    socket.emit('conversation_created', {
+      conversation: conversation,
+      conversations: userSession.conversations
+    });
+  });
+
+  // Handle conversation selection
+  socket.on('select_conversation', (data) => {
+    const { conversationId } = data;
+    const conversation = conversations.get(conversationId);
+    
+    if (conversation) {
+      const userSession = userSessions.get(socket.id);
+      userSession.currentConversation = conversationId;
+      
+      socket.emit('conversation_selected', {
+        conversation: conversation,
+        messages: conversation.messages
+      });
     }
   });
 
-  // Handle start process request from frontend
-  socket.on("start_process", (userData) => {
-    console.log(`[${socket.id}] Starting RCA process for:`, userData);
-
-    // Check if process is already running for this socket
-    if (activePythonProcesses.has(socket.id)) {
-      console.log(
-        `[${socket.id}] Process already running for this socket, ignoring duplicate request`
-      );
+  // Handle regular chat messages
+  socket.on('send_chat_message', async (data) => {
+    const { message, conversationId } = data;
+    const conversation = conversations.get(conversationId);
+    
+    if (!conversation) {
+      socket.emit('error', { message: 'Conversation not found' });
       return;
     }
 
-    // Extract and parse the actual data from the wrapper
-    let actualData = userData?.message || userData;
+    // Add user message to conversation
+    const userMessage = {
+      id: `msg_${Date.now()}`,
+      text: message,
+      sender: 'user',
+      timestamp: new Date().toISOString(),
+      type: 'text'
+    };
+    
+    conversation.messages.push(userMessage);
+    conversation.updated_at = new Date().toISOString();
 
-    // If actualData is a string, parse it as JSON
-    if (typeof actualData === "string") {
-      try {
-        actualData = JSON.parse(actualData);
-        console.log(`[${socket.id}] Parsed JSON string to object:`, actualData);
-      } catch (e) {
-        console.error(`[${socket.id}] Failed to parse JSON string:`, e);
-        socket.emit("error", {
-          type: "error",
-          message: "Invalid JSON data received",
+    // Emit message immediately
+    socket.emit('message_received', {
+      conversationId,
+      message: userMessage
+    });
+
+    // Check if this is an RCA request
+    if (isRCARequest(message)) {
+      // Update conversation type and title
+      conversation.type = 'rca';
+      conversation.title = extractRCATitle(message);
+      
+      // Start RCA process
+      startRCAProcess(socket, conversationId, message);
+    } else {
+      // Handle regular chat with simulated AI response
+      setTimeout(() => {
+        const aiResponse = {
+          id: `msg_${Date.now()}`,
+          text: generateChatResponse(message),
+          sender: 'ai',
           timestamp: new Date().toISOString(),
+          type: 'text'
+        };
+        
+        conversation.messages.push(aiResponse);
+        conversation.updated_at = new Date().toISOString();
+        
+        socket.emit('message_received', {
+          conversationId,
+          message: aiResponse
         });
-        return;
+      }, 1000);
+    }
+  });
+
+  // Handle RCA process initiation
+  socket.on('start_rca_analysis', (data) => {
+    const { conversationId, rcaData } = data;
+    startRCAProcess(socket, conversationId, rcaData);
+  });
+
+  // Handle process termination
+  socket.on('terminate_process', (data) => {
+    const { conversationId } = data;
+    const processKey = `${socket.id}_${conversationId}`;
+    
+    if (activeProcesses.has(processKey)) {
+      const process = activeProcesses.get(processKey);
+      if (process && !process.killed) {
+        process.kill('SIGTERM');
+        activeProcesses.delete(processKey);
+        
+        socket.emit('process_terminated', {
+          conversationId,
+          message: 'RCA process terminated successfully.'
+        });
       }
     }
+  });
 
-    console.log(`[${socket.id}] Extracted message data:`, actualData);
-
-    // Convert to the exact format expected by Python LangGraph workflow
-    const pythonInputData = {
-      failed_table: actualData.failed_table || "",
-      failed_column: actualData.failed_column || "",
-      validation_query: actualData.validation_query || "",
-      execution_date: actualData.execution_date || "",
-      db_type: actualData.db_type || "GCP",
-      sd_threshold: actualData.sd_threshold || 3,
-      expected_std_dev: actualData.expected_std_dev || 0,
-      expected_value: actualData.expected_value || 0,
-      actual_value: actualData.actual_value || 0,
-      // Add any other fields the Python workflow expects
-      issue_summary_result: null,
-      data_validation_message: null,
-      lineage_tree: null,
-      paths_to_process: null,
-      analysis_results: null,
-      agent_input: actualData, // Keep original data as agent_input (now properly parsed)
-      anamoly_node_response: "",
-    };
-
-    console.log(`[${socket.id}] Converted data for Python:`, pythonInputData);
-
-    startRCAProcess(socket, pythonInputData);
+  // Get conversation history
+  socket.on('get_conversations', () => {
+    const userSession = userSessions.get(socket.id);
+    socket.emit('conversations_list', {
+      conversations: userSession.conversations
+    });
   });
 });
 
-// Function to start the Python RCA process
-function startRCAProcess(socket, userData) {
+// Function to detect RCA requests
+function isRCARequest(message) {
+  const rcaKeywords = [
+    'investigate', 'deviation', 'anomaly', 'root cause', 'analyze', 'rca',
+    'data quality', 'lineage', 'trace', 'failed_rule', 'validation'
+  ];
+  
+  const lowerMessage = message.toLowerCase();
+  return rcaKeywords.some(keyword => lowerMessage.includes(keyword)) ||
+         message.includes('{') && message.includes('}'); // JSON-like structure
+}
+
+// Function to extract RCA title from message
+function extractRCATitle(message) {
+  if (message.length > 50) {
+    return message.substring(0, 47) + '...';
+  }
+  return message;
+}
+
+// Function to generate chat responses
+function generateChatResponse(message) {
+  const responses = [
+    "I understand your question. How can I help you further?",
+    "That's an interesting point. Could you provide more details?",
+    "I'm here to assist you. What specific information are you looking for?",
+    "Let me help you with that. Can you clarify what you need?",
+    "I see what you're asking. Here's what I can tell you...",
+  ];
+  
+  return responses[Math.floor(Math.random() * responses.length)];
+}
+
+// Function to start RCA process
+function startRCAProcess(socket, conversationId, inputData) {
+  const processKey = `${socket.id}_${conversationId}`;
+  
+  // Check if process is already running
+  if (activeProcesses.has(processKey)) {
+    console.log(`RCA process already running for ${processKey}`);
+    return;
+  }
+
   try {
-    console.log(`[${socket.id}] Starting Python RCA process...`);
-
-    // Python script path
-    const pythonScriptPath = path.join(
-      __dirname,
-      "..",
-      "adq-python-script",
-      "scripts",
-      "adq_agents.py"
-    );
-    const venvPythonPath = path.join(
-      __dirname,
-      "..",
-      "adq-python-script",
-      ".venv",
-      "Scripts",
-      "python.exe"
-    );
-
-    // Send JSON directly - no base64 conversion needed
-    const userDataJson = JSON.stringify(userData);
-
-    // Python options - optimized for performance and reliability
-    const options = {
-      mode: "text",
-      pythonPath: venvPythonPath,
-      pythonOptions: ["-u", "-W", "ignore"],
-      scriptPath: path.dirname(pythonScriptPath),
-      args: ["--json", userDataJson], // Changed from --base64 to --json
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: "utf-8",
-        PYTHONLEGACYWINDOWSSTDIO: "1",
-        PYTHONUNBUFFERED: "1",
-        PYTHONUTF8: "1",
-        PYTHONDONTWRITEBYTECODE: "1", // Prevent .pyc file generation
-      },
-    };
-
-    // Start the Python process
-    const pythonProcess = new PythonShell(
-      path.basename(pythonScriptPath),
-      options
-    );
-    activePythonProcesses.set(socket.id, pythonProcess);
-
-    console.log(
-      `[${socket.id}] Python process started. Active processes: ${activePythonProcesses.size}`
-    );
-
-    // Process timeout (5 minutes)
-    const processTimeout = setTimeout(() => {
-      console.log(`[${socket.id}] Killing Python process due to timeout`);
-      if (activePythonProcesses.has(socket.id)) {
-        pythonProcess.kill();
-        activePythonProcesses.delete(socket.id);
-        socket.emit("error", {
-          type: "error",
-          message: "Process timed out. Please try again.",
-          timestamp: new Date().toISOString(),
-        });
-      }
-    }, 5 * 60 * 1000);
-
-    // Send acknowledgment
-    socket.emit("acknowledgment", {
-      type: "acknowledgment",
-      content: "Starting Agentic Data Quality analysis...",
-      timestamp: new Date().toISOString(),
-    });
-
-    // Handle Python script output with simple line-by-line JSON parsing
-    let lineBuffer = "";
-
-    pythonProcess.on("message", (message) => {
-      try {
-        console.log(`[${socket.id}] Python output:`, message);
-
-        // Accumulate data in line buffer
-        lineBuffer += message;
-
-        // Process complete lines (JSON messages)
-        let newlineIndex;
-        while ((newlineIndex = lineBuffer.indexOf("\n")) !== -1) {
-          const completeLine = lineBuffer.substring(0, newlineIndex).trim();
-          lineBuffer = lineBuffer.substring(newlineIndex + 1);
-
-          // Skip empty lines
-          if (!completeLine) {
-            continue;
-          }
-
-          console.log(
-            `[${socket.id}] Processing complete line: ${completeLine}`
-          );
-
-          // Process the complete JSON message
-          processMessage(completeLine, socket);
-        }
-      } catch (error) {
-        console.error(`[${socket.id}] Error processing Python output:`, error);
-        socket.emit("error", {
-          type: "error",
-          message: `Error processing output: ${error.message}`,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    });
-
-    // Handle stderr for Python errors
-    pythonProcess.stderr?.on("data", (data) => {
-      console.error(`[${socket.id}] Python stderr:`, data.toString());
-      socket.emit("error", {
-        type: "error",
-        message: `Python error: ${data.toString()}`,
-        timestamp: new Date().toISOString(),
-      });
-    });
-
-    // Function to process JSON messages (one per line)
-    function processMessage(messageStr, socket) {
-      try {
-        console.log(`[${socket.id}] Processing JSON message:`, messageStr);
-
-        // Skip empty messages
-        if (!messageStr.trim()) {
-          console.log(`[${socket.id}] Skipping empty message`);
-          return;
-        }
-
-        const parsedMessage = JSON.parse(messageStr);
-
-        // Handle different message types
-        if (parsedMessage.type === "LINEAGE_TREE") {
-          socket.emit("lineage_tree", parsedMessage);
-        } else if (parsedMessage.type === "NODE_STATUS") {
-          socket.emit("node_status", parsedMessage);
-        } else if (parsedMessage.type === "step_result") {
-          // Handle 3-step workflow results
-          socket.emit("process_step", {
-            type: "step_result",
-            step_number: parsedMessage.step_number,
-            title: parsedMessage.title,
-            content: parsedMessage.content,
-            data: parsedMessage.data,
-            timestamp: parsedMessage.timestamp,
-          });
-        } else if (parsedMessage.type === "node_response") {
-          // Handle real-time node responses
-          socket.emit("process_step", {
-            type: "node_response",
-            title: parsedMessage.title,
-            content: parsedMessage.content,
-            node_name: parsedMessage.node_name,
-            data: parsedMessage.data,
-            timestamp: parsedMessage.timestamp,
-          });
-        } else if (parsedMessage.type === "FLOW_UPDATE") {
-          socket.emit("process_step", {
-            title: parsedMessage.data?.stepId || "Process Update",
-            type: "flow_update",
-            content: parsedMessage.data?.message || "Processing...",
-            data: parsedMessage.data,
-            status: parsedMessage.data?.status,
-            timestamp:
-              parsedMessage.data?.timestamp || new Date().toISOString(),
-          });
-        } else if (parsedMessage.title && parsedMessage.content) {
-          // Handle standard message format
-          const isFinalResponse =
-            parsedMessage.title === "Final Summary" ||
-            parsedMessage.type === "final_summary" ||
-            parsedMessage.type === "completion";
-
-          if (isFinalResponse) {
-            socket.emit("final_response", {
-              type: "final_response",
-              content: parsedMessage.content,
-              timestamp: parsedMessage.timestamp || new Date().toISOString(),
-            });
-          } else if (parsedMessage.type === "error") {
-            socket.emit("error", {
-              type: "error",
-              message: parsedMessage.content,
-              timestamp: parsedMessage.timestamp || new Date().toISOString(),
-            });
-          } else {
-            socket.emit("process_step", {
-              type: "process_step",
-              content: parsedMessage.content,
-              title: parsedMessage.title,
-              timestamp: parsedMessage.timestamp || new Date().toISOString(),
-            });
-          }
-        } else {
-          // Fallback for unstructured messages
-          socket.emit("process_step", {
-            type: "process_step",
-            content: messageStr,
-            timestamp: new Date().toISOString(),
-          });
-        }
-      } catch (error) {
-        console.error(`[${socket.id}] Error parsing JSON message:`, error);
-        console.error(`[${socket.id}] Problematic message:`, messageStr);
-
-        // Don't send malformed messages to the frontend
-        console.log(
-          `[${socket.id}] Skipping malformed JSON message due to parse error`
-        );
-      }
+    console.log(`Starting RCA process for conversation: ${conversationId}`);
+    
+    // Python script path - using the updated version
+    const pythonScriptPath = path.join(__dirname, '..', 'adq-python-script', 'scripts', 'agentic_dq_claude_v2.py');
+    const venvPythonPath = path.join(__dirname, '..', 'adq-python-script', '.venv', 'Scripts', 'python.exe');
+    
+    // Parse input data
+    let rcaInput;
+    try {
+      // Try to parse as JSON first
+      rcaInput = JSON.parse(inputData);
+    } catch (e) {
+      // If not JSON, create structured input from text
+      rcaInput = {
+        failed_column: "data_quality_metric",
+        failed_table: "target_table",
+        validation_query: inputData,
+        expected_value: 0,
+        expected_std_dev: 1.0,
+        actual_value: 10,
+        sd_threshold: 3,
+        agent_input: inputData
+      };
     }
 
-    // Handle Python script completion
-    pythonProcess.on("close", (code, signal) => {
-      console.log(
-        `[${socket.id}] Python script finished with code: ${code}, signal: ${signal}`
-      );
+    // Spawn Python process
+    const pythonProcess = spawn(venvPythonPath, [pythonScriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: path.dirname(pythonScriptPath)
+    });
 
-      clearTimeout(processTimeout);
-      activePythonProcesses.delete(socket.id);
-      console.log(
-        `[${socket.id}] Process cleaned up. Active processes: ${activePythonProcesses.size}`
-      );
+    activeProcesses.set(processKey, pythonProcess);
+    console.log(`Python process started for ${processKey}`);
 
-      if (code === 0 || (code === null && signal === null)) {
-        // Success case - either explicit 0 or normal termination
-        socket.emit("final_response", {
-          type: "final_response",
-          content: "Root Cause Analysis completed successfully.",
-          timestamp: new Date().toISOString(),
+    // Process timeout (10 minutes)
+    const processTimeout = setTimeout(() => {
+      console.log(`Killing Python process due to timeout: ${processKey}`);
+      if (activeProcesses.has(processKey)) {
+        pythonProcess.kill('SIGTERM');
+        activeProcesses.delete(processKey);
+        
+        socket.emit('rca_error', {
+          conversationId,
+          message: 'RCA process timed out after 10 minutes. Please try again.',
+          timestamp: new Date().toISOString()
         });
-      } else if (signal) {
-        // Process was killed by signal
-        socket.emit("error", {
-          type: "error",
-          message: `Process was terminated (signal: ${signal}). Please try again.`,
-          timestamp: new Date().toISOString(),
-        });
-      } else if (code === null || code === undefined) {
-        // Handle undefined exit code - likely successful completion on Windows
-        socket.emit("final_response", {
-          type: "final_response",
-          content: "Root Cause Analysis completed successfully.",
-          timestamp: new Date().toISOString(),
-        });
-      } else {
-        // Non-zero exit code
-        socket.emit("error", {
-          type: "error",
-          message: `Process completed with error code: ${code}`,
-          timestamp: new Date().toISOString(),
+      }
+    }, 10 * 60 * 1000);
+
+    // Send initial status
+    socket.emit('rca_started', {
+      conversationId,
+      message: 'Starting Agentic Data Quality Root Cause Analysis...',
+      timestamp: new Date().toISOString()
+    });
+
+    // Send input data to Python process
+    pythonProcess.stdin.write(JSON.stringify(rcaInput));
+    pythonProcess.stdin.end();
+
+    // Handle Python output with line-by-line processing
+    let lineBuffer = '';
+
+    pythonProcess.stdout?.on('data', (data) => {
+      lineBuffer += data.toString();
+      
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() || '';
+      
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine) continue;
+        
+        try {
+          const jsonMessage = JSON.parse(trimmedLine);
+          console.log(`[${processKey}] Received JSON:`, jsonMessage);
+          
+          // Route different message types appropriately
+          switch (jsonMessage.type) {
+            case 'progress':
+              socket.emit('progress', jsonMessage);
+              break;
+            case 'analysis_result':
+              socket.emit('analysis_result', jsonMessage);
+              break;
+            case 'table_data':
+              socket.emit('table_data', jsonMessage);
+              break;
+            case 'lineage_graph':
+              socket.emit('lineage_graph', jsonMessage);
+              break;
+            case 'node_status_update':
+              socket.emit('node_status_update', jsonMessage);
+              break;
+            case 'step_result':
+              socket.emit('step_result', jsonMessage);
+              break;
+            case 'final_report':
+              socket.emit('final_report', jsonMessage);
+              break;
+            case 'bot':
+            case 'user':
+              socket.emit('message', jsonMessage);
+              break;
+            case 'error':
+              socket.emit('error', jsonMessage);
+              break;
+            default:
+              // Store in conversation and emit generic update
+              const conversation = conversations.get(conversationId);
+              if (conversation) {
+                const rcaMessage = {
+                  id: `msg_${Date.now()}_${Math.random()}`,
+                  sender: 'ai',
+                  timestamp: new Date().toISOString(),
+                  type: jsonMessage.type || 'rca_update',
+                  content: jsonMessage.content || jsonMessage.message || '',
+                  metadata: jsonMessage.metadata || jsonMessage.data || {}
+                };
+
+                conversation.messages.push(rcaMessage);
+                conversation.updated_at = new Date().toISOString();
+
+                socket.emit('rca_update', {
+                  conversationId,
+                  message: rcaMessage,
+                  rawData: jsonMessage
+                });
+              }
+          }
+          
+        } catch (parseError) {
+          console.error(`JSON parse error for ${processKey}:`, parseError);
+          // Don't spam frontend with parsing errors
+        }
+      }
+    });
+
+    // Handle stderr
+    pythonProcess.stderr?.on('data', (data) => {
+      const errorOutput = data.toString();
+      console.error(`Python stderr for ${processKey}:`, errorOutput);
+      
+      if (errorOutput.includes('ERROR') || errorOutput.includes('CRITICAL')) {
+        socket.emit('rca_error', {
+          conversationId,
+          message: `Python error: ${errorOutput}`,
+          timestamp: new Date().toISOString()
         });
       }
     });
 
-    // Handle Python script errors
-    pythonProcess.on("error", (error) => {
-      console.error(`[${socket.id}] Python script error:`, error);
+    // Handle process completion
+    pythonProcess.on('close', (code, signal) => {
+      console.log(`Python process finished for ${processKey}: code=${code}, signal=${signal}`);
+      
       clearTimeout(processTimeout);
-
-      socket.emit("error", {
-        type: "error",
-        message: `Python script error: ${error.message}`,
-        timestamp: new Date().toISOString(),
-      });
-
-      activePythonProcesses.delete(socket.id);
+      activeProcesses.delete(processKey);
+      
+      if (code === 0) {
+        socket.emit('rca_completed', {
+          conversationId,
+          message: 'Root Cause Analysis completed successfully.',
+          timestamp: new Date().toISOString()
+        });
+      } else if (code !== null && code !== 0) {
+        socket.emit('rca_error', {
+          conversationId,
+          message: `RCA process failed with exit code: ${code}`,
+          timestamp: new Date().toISOString()
+        });
+      }
     });
-  } catch (error) {
-    console.error(`[${socket.id}] Error starting Python process:`, error);
 
-    socket.emit("error", {
-      type: "error",
-      message: `Failed to start RCA process: ${error.message}`,
-      timestamp: new Date().toISOString(),
+    // Handle process errors
+    pythonProcess.on('error', (error) => {
+      console.error(`Python process error for ${processKey}:`, error);
+      clearTimeout(processTimeout);
+      
+      socket.emit('rca_error', {
+        conversationId,
+        message: `Failed to start RCA process: ${error.message}`,
+        timestamp: new Date().toISOString()
+      });
+      
+      activeProcesses.delete(processKey);
+    });
+
+  } catch (error) {
+    console.error(`Error starting RCA process for ${processKey}:`, error);
+    
+    socket.emit('rca_error', {
+      conversationId,
+      message: `Failed to initialize RCA process: ${error.message}`,
+      timestamp: new Date().toISOString()
     });
   }
 }
 
 // Health check endpoint
-app.get("/api/health", (req, res) => {
+app.get('/health', (req, res) => {
   res.json({
-    status: "healthy",
+    status: 'healthy',
     timestamp: new Date().toISOString(),
-    activeProcesses: activePythonProcesses.size,
-    connections: io.engine.clientsCount,
+    activeProcesses: activeProcesses.size,
+    activeSessions: userSessions.size,
+    totalConversations: conversations.size
   });
 });
 
-// Start the server
+// Get system status
+app.get('/api/status', (req, res) => {
+  res.json({
+    activeProcesses: activeProcesses.size,
+    activeSessions: userSessions.size,
+    totalConversations: conversations.size,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Start server
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(
-    `🚀 Agentic DQ Backend Server running on http://127.0.0.1:${PORT}`
-  );
+const HOST = process.env.HOST || '127.0.0.1';
+
+server.listen(PORT, HOST, () => {
+  console.log(`🚀 Integrated Gemini + RCA Backend running on http://${HOST}:${PORT}`);
   console.log(`📡 WebSocket server ready for connections`);
-  console.log(`🔗 Frontend should connect to: http://127.0.0.1:${PORT}`);
+  console.log(`🔗 Frontend should connect to: http://${HOST}:${PORT}`);
 });
 
 // Graceful shutdown
-process.on("SIGTERM", () => {
-  console.log("Shutting down server...");
+process.on('SIGTERM', handleShutdown);
+process.on('SIGINT', handleShutdown);
 
-  // Kill all active Python processes
-  activePythonProcesses.forEach((process) => {
-    process.kill();
+function handleShutdown() {
+  console.log('Shutting down server...');
+  
+  activeProcesses.forEach((process, key) => {
+    console.log(`Terminating process: ${key}`);
+    if (process && !process.killed) {
+      process.kill('SIGTERM');
+    }
   });
-
+  
+  activeProcesses.clear();
+  
   server.close(() => {
-    console.log("Server closed.");
+    console.log('Server closed.');
     process.exit(0);
   });
-});
+}

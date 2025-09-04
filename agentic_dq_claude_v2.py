@@ -20,8 +20,9 @@ import ast
 import configparser
 from datetime import datetime
 import uuid
+import argparse
 from pyvegas.helpers.utils import set_proxy, unset_proxy
-from pyvegas.langx import VegasLangchainLLM
+from pyvegas.langx.llm import VegasChatLLM
 
 set_proxy()
 
@@ -32,8 +33,22 @@ warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
 
 config = configparser.ConfigParser()
-config_file_path = os.path.join("/apps/opt/application/dev_smartdq/dev/agentic_dq/config", 'config.ini')
-files_read = config.read(config_file_path)
+# config_file_path = os.path.join("/apps/opt/application/dev_smartdq/dev/agentic_dq/config", 'config.ini')
+# files_read = config.read(config_file_path)
+
+# Determine config path based on environment
+environment = os.getenv('ADQ_ENVIRONMENT', 'local')
+if environment == 'local':
+    config_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", 'config.ini')
+elif environment == 'dev':
+    config_file_path = '/apps/opt/application/dev_smartdq/dev/agentic_dq/config/config.ini'
+elif environment == 'prod':
+    config_file_path = '/apps/opt/application/prod_smartdq/prod/agentic_dq/config/config.ini'
+else:
+    # Default fallback
+    config_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", 'config.ini')
+
+config.read(config_file_path)
 
 SA_PATH = config['paths']['SA_PATH']
 RULES_CSV_PATH = config['paths']['RULES_CSV_PATH']
@@ -60,7 +75,7 @@ os.environ["ENVIRONMENT"] = ENVIRONMENT
 usecase_name = USECASE_NAME # Add your vegas usecase name here
 context_name = CONTEXT_NAME # Add your vegas context name here
 
-llm = VegasLangchainLLM(usecase_name=usecase_name, context_name=context_name, temperature=0)
+llm = VegasChatLLM(usecase_name=usecase_name, context_name=context_name, temperature=0)
 json_parser = JsonOutputParser()
 
 class RootCauseAnalysisState(TypedDict):
@@ -76,7 +91,7 @@ class RootCauseAnalysisState(TypedDict):
     parsed_dq_info : Dict[str, Any]
     trace_data : Optional[Dict[str, Dict[str, List[Dict]]]] # Enriched trace data structure
     paths_to_process: Optional[List[Tuple[int, str, str, str]]]
-    mismatched_nodes: Optional[List[Dict[str, Any]]]
+    mismatched_nodes: Optional[List[Dict[str, Any]]] # Stores only nodes with discrepancies
     analysis_results: Optional[Dict[str, Any]]
     agent_input: str
     anamoly_node_response: str
@@ -93,6 +108,19 @@ def emit_message(message_type: str, content: str, metadata: Dict = None):
         "content": content,
         "timestamp": datetime.now().isoformat(),
         "metadata": metadata or {}
+    }
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+def emit_step_title(role: str, step_number: str, title: str):
+    """
+    Emit a step title message for the conversation flow
+    """
+    message = {
+        "type": "emit_step_title",
+        "role": role,
+        "step_number": int(step_number),
+        "title": title
     }
     sys.stdout.write(json.dumps(message) + "\n")
     sys.stdout.flush()
@@ -188,6 +216,53 @@ def emit_table_data(data: Dict, title: str):
     sys.stdout.write(json.dumps(table_message) + "\n")
     sys.stdout.flush()
 
+def build_graph_structure_from_lineage(lineage_graph: nx.DiGraph, l0_key: str) -> Dict:
+    """Convert NetworkX lineage graph to frontend-compatible graph structure"""
+    try:
+        nodes = []
+        edges = []
+        tables_added = set()
+
+        for node in lineage_graph.nodes():
+            try:
+                if '.' in node:
+                    table_name, column_name = node.rsplit('.', 1)
+                    table_display_name = table_name.rsplit('.', 1)[-1] if '.' in table_name else table_name
+                else:
+                    table_display_name = node
+                    column_name = node
+
+                # Add table node if not already added
+                if table_display_name not in tables_added:
+                    nodes.append({
+                        "id": table_display_name,
+                        "label": table_display_name,
+                        "type": "table"
+                    })
+                    tables_added.add(table_display_name)
+
+                # Add column node
+                nodes.append({
+                    "id": node,
+                    "label": column_name,
+                    "type": "column",
+                    "parent": table_display_name
+                })
+            except Exception as e:
+                logger.warning(f"Error processing node {node}: {e}")
+                continue
+
+        # Add edges
+        for source, target in lineage_graph.edges():
+            edges.append({"source": source, "target": target})
+        print('Nodes added:', nodes)
+        print('Edges added:', edges)
+        return {"nodes": nodes, "edges": edges}
+
+    except Exception as e:
+        logger.error(f"Error building graph structure: {e}")
+        return {"nodes": [], "edges": []}
+
 def isTokenExpired(path):
     try:
         if(os.path.exists(OIDC_TOKEN_PATH)):
@@ -214,7 +289,7 @@ def exchange_and_save_oidc_token_for_jwt(client_id:str, client_secret:str) -> No
     payload = {'grant_type':'client_credentials','client_id':client_id,'client_secret':client_secret,'scope':'read'}
 
     try:
-        response = requests.post(url=url, params=payload)
+        response = requests.post(url=url,params=payload)
         response.raise_for_status()
         token = response.json()
         logger.info('Saving token...')
@@ -226,16 +301,17 @@ def exchange_and_save_oidc_token_for_jwt(client_id:str, client_secret:str) -> No
         raise e
 
 def bigquery_execute(query: str) -> pd.DataFrame:
+    #clientid and secret should be vaulted
     client_id = CLIENT_ID
     client_secret = CLIENT_SECRET
     project_id = PROJECT_ID
     # get a jwt
     if isTokenExpired(OIDC_TOKEN_PATH):
-        exchange_and_save_oidc_token_for_jwt(client_id=client_id, client_secret=client_secret)
-    
+        exchange_and_save_oidc_token_for_jwt(client_id=client_id,client_secret=client_secret)
+    # set the GOOGLE_APPLICATION_ENVIRONMENT
     logger.info('Setting environment variable...')
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = SA_PATH
-    os.environ['GOOGLE_CLOUD_PROJECT'] = GOOGLE_CLOUD_PROJECT
+    os.environ['GOOGLE_CLOUD_PROJECT']= GOOGLE_CLOUD_PROJECT
     credentials, auth_project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
 
     logger.info(f"project_id={project_id}, credentials={credentials}")
@@ -264,11 +340,11 @@ def extract_metric_from_output(df_json, sql_query) -> Optional[float]:
         if match:
             return float(match.group(0))
         else:
-            logger.warning(f"LLM didn't return valid number: {response}")
-            return 0.0
-    except Exception as e:
-        logger.error(f"Failed to extract metric: {e}")
-        return 0.0
+            logger.info(f"LLM didnt return the actual value:{response}")
+            return 0
+    except:
+        logger.error("Failed to get actual value")
+        return None
 
 def get_predecessor_info(node_name: str, lineage_graph: nx.DiGraph) -> List[Dict[str, str]]:
     """
@@ -278,7 +354,9 @@ def get_predecessor_info(node_name: str, lineage_graph: nx.DiGraph) -> List[Dict
     predecessors_list = []
 
     try:
+        # In a DiGraph from lineage, successors of a node are its upstream sources.
         for pred_node in lineage_graph.successors(node_name):
+            # The edge from node_name to pred_node describes the transformation
             transformation = lineage_graph.edges[node_name, pred_node].get('transformation', 'N/A')
             predecessors_list.append({
                 'prev_table': pred_node.rsplit('.', 1)[0],
@@ -291,56 +369,9 @@ def get_predecessor_info(node_name: str, lineage_graph: nx.DiGraph) -> List[Dict
     
     return predecessors_list
 
-def build_graph_structure_from_lineage(lineage_graph: nx.DiGraph, l0_key: str) -> Dict:
-    """Convert NetworkX lineage graph to frontend-compatible graph structure"""
-    try:
-        nodes = []
-        edges = []
-        tables_added = set()
-        
-        for node in lineage_graph.nodes():
-            try:
-                if '.' in node:
-                    table_name, column_name = node.rsplit('.', 1)
-                    table_display_name = table_name.rsplit('.', 1)[-1] if '.' in table_name else table_name
-                else:
-                    table_display_name = node
-                    column_name = node
-                
-                # Add table node if not already added
-                if table_display_name not in tables_added:
-                    nodes.append({
-                        "id": table_display_name,
-                        "label": table_display_name,
-                        "type": "table"
-                    })
-                    tables_added.add(table_display_name)
-                
-                # Add column node
-                nodes.append({
-                    "id": node,
-                    "label": column_name,
-                    "type": "column",
-                    "parent": table_display_name
-                })
-            except Exception as e:
-                logger.warning(f"Error processing node {node}: {e}")
-                continue
-        
-        # Add edges
-        for source, target in lineage_graph.edges():
-            edges.append({"source": source, "target": target})
-        
-        return {"nodes": nodes, "edges": edges}
-        
-    except Exception as e:
-        logger.error(f"Error building graph structure: {e}")
-        return {"nodes": [], "edges": []}
-
 def replace_technical_date_with_business_date(sql_query: str, table_name: str) -> str:
-    """Replace technical date columns with business date columns"""
     try:
-        logger.info('Updating query technical dates with business dates')
+        logger.info('Updating the Query technical dates with business dates')
         date_df = pd.read_csv(RULES_CSV_PATH)
         row = date_df[date_df['BQ Table Name'].str.lower() == table_name.lower()]
     
@@ -410,6 +441,7 @@ def extract_sql_from_text(text: str) -> str:
     return text.strip()  # Return original text if no SQL found
 
 def anamoly_identifier_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
+    emit_step_title('bot', '1', 'Anomaly Identification')
     user_input = state
     prompt = f"""You are a data validation assistant. Your task is to analyze validation results and generate clear, concise, and professional summaries for data quality issues based on provided metadata.
                 Your response must:
@@ -427,10 +459,11 @@ def anamoly_identifier_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     response = llm.invoke(prompt).content
     failed_rule = user_input["validation_query"]
     # st.session_state.messages.append({"role": "bot", "content": response})
-    emit_message("bot", summary)
+    emit_message("bot", response) # Make sure display_message is defined
     return {"anamoly_node_response": response, "validation_query": failed_rule}
 
 def analysis_decision_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
+    emit_step_title('bot', '2', 'Analysis Decision')
     emit_progress("analysis_decision", "started", {"step": "Determining analysis approach"})
     
     decider_prompt = f"""As an expert SQL analyst, your task is to determine how columns in a data quality validation query contribute to metrics.
@@ -640,7 +673,6 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
     Performs the initial check for a single-column failure and formats the result
     into the new enriched trace_data structure.
     """
-    # Action 1: Announce validation start
     emit_message("bot", "This appears to be a single-column validation. I am now performing the initial check on layer L0 to validate the alert...")
     
     validation_query = state['validation_query']
@@ -670,18 +702,17 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
     reasoning = (f"The actual value of {actual_value:.2f} is outside the specified threshold [{lower_bound:.2f}, {upper_bound:.2f}] based on historical data."
                  if is_out_of_bounds else f"The actual value of {actual_value:.2f} is within the specified threshold.")
 
-    inference = ("Deviation confirmed. A lineage trace is necessary to uncover the root cause."
-                 if is_out_of_bounds else "No deviation found. Lineage tracing is not required.")
+    # inference = ("Deviation confirmed. A lineage trace is necessary to uncover the root cause."
+    #              if is_out_of_bounds else "No deviation found. Lineage tracing is not required.")
 
-    # Action 2: Emit structured analysis result
-    emit_message("analysis_result", "L0 Validation Result", {
-        "layer": "L0",
-        "table": failed_table.rsplit('.', 1)[-1],
-        "column": failed_column,
-        "sql_query": individual_query,
-        "reasoning": reasoning,
-        "inference": inference
-    })
+    # emit_message("analysis_result", "L0 Validation Result", {
+    #     "layer": "L0",
+    #     "table": failed_table.rsplit('.', 1)[-1],
+    #     "column": failed_column,
+    #     "sql_query": individual_query,
+    #     "reasoning": reasoning,
+    #     "inference": inference
+    # })
 
     trace_data = {}
     paths_to_process = []
@@ -713,24 +744,30 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
             logger.info(f"Error in loading lineage graph for '{l0_key}' from {graph_file_path}")
         
         # Emit detailed message for deviation found case
-        emit_message("bot", f"Analyzing the data on L0 layer for {failed_column}")
-        emit_message("analysis_detail", f"L0 Analysis - Deviation Detected", {
-            "column": failed_column,
-            "table": failed_table.rsplit('.', 1)[-1],
-            "reasoning": reasoning,
-            "sql_query": individual_query,
-            "conclusion": "A significant deviation has been detected in the column's values. A lineage trace is necessary to uncover the root cause."
-        })
+        emit_message("bot", f"Analyzing the data on L0 layer for <b>{failed_column}</b>")
+        emit_message("bot", f"Reasoning: <b>{reasoning}</b>")
+        emit_message("bot", f"SQL query for actual value: <pre><code>{individual_query}</code></pre>")
+        emit_message("bot", f"A significant deviation has been detected in the <b>{failed_column}</b> column's values over the past month. A lineage trace is necessary to uncover the root cause.")
+        # emit_message("analysis_detail", f"L0 Analysis - Deviation Detected", {
+        #     "column": failed_column,
+        #     "table": failed_table.rsplit('.', 1)[-1],
+        #     "reasoning": reasoning,
+        #     "sql_query": individual_query,
+        #     "conclusion": "A significant deviation has been detected in the column's values. A lineage trace is necessary to uncover the root cause."
+        # })
     else:
         # Emit detailed message for no deviation case
-        emit_message("bot", f"Analyzing the data on L0 layer for {failed_column}")
-        emit_message("analysis_detail", f"L0 Analysis - No Deviation", {
-            "column": failed_column,
-            "table": failed_table.rsplit('.', 1)[-1],
-            "reasoning": reasoning,
-            "sql_query": individual_query,
-            "conclusion": f"The data in column {failed_column} falls within the expected range, indicating that lineage tracing isn't necessary."
-        })
+        emit_message("bot", f"Analyzing the data on L0 layer for <b>{failed_column}</b>")
+        emit_message("bot", f"Reasoning: <b>{reasoning}</b>")
+        emit_message("bot", f"SQL query for actual value: <pre><code>{individual_query}</code></pre>")
+        emit_message("bot", f"The data in column <b>{failed_column}</b> falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary.")
+        # emit_message("analysis_detail", f"L0 Analysis - No Deviation", {
+        #     "column": failed_column,
+        #     "table": failed_table.rsplit('.', 1)[-1],
+        #     "reasoning": reasoning,
+        #     "sql_query": individual_query,
+        #     "conclusion": f"The data in column {failed_column} falls within the expected range, indicating that lineage tracing isn't necessary."
+        # })
 
     return {"trace_data": trace_data, "paths_to_process": paths_to_process, "mismatched_nodes": mismatched_nodes, "loaded_lineage_graphs" : loaded_graphs}
 
@@ -740,6 +777,8 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
     value comparisons (Equality vs. Statistical) directly within the step.
     Only mismatched paths are added to the next queue.
     """
+    emit_step_title('bot', '3', 'Tracing Backward')
+
     trace_data = state['trace_data'].copy()
     paths_to_process = state['paths_to_process']
     mismatched_nodes = state.get('mismatched_nodes', [])
@@ -748,12 +787,11 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if not paths_to_process:
         logger.info("No paths left to process.")
         return {"paths_to_process": []}
-
+    print("state", state)
     # Emit step 3 message and lineage graph (only on first run)
     first_run = any(step_num == 0 for step_num, _, _, _ in paths_to_process)
     if first_run:
         emit_message("bot", "Checking for upstream dependencies based on data lineage ...")
-        emit_message("bot", "Upstream dependencies based on data lineage")
         
         # Build and emit the initial graph structure
         for _, _, _, l0_key in paths_to_process:
@@ -1021,12 +1059,6 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 
                 emit_step_result(3, "count_check_result", pred_table, pred_column, "", 
                                f"Data consistent at {pred_table_display}.{pred_column} - no issues found.", "success")
-
-    # Check if no further upstream tables are involved
-    if not next_paths_to_process and paths_to_process:
-        current_columns = [col for _, _, col, _ in paths_to_process]
-        emit_message("bot", f"No further upstream tables are involved in the lineage for {' or '.join(current_columns)}. Therefore, the analysis concludes here.")
-
     return {"trace_data": trace_data, "paths_to_process": next_paths_to_process, "mismatched_nodes": mismatched_nodes}
 
 def execute_and_correct_query(query, retries=3):
@@ -1095,8 +1127,8 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     The final node in the graph. It synthesizes all findings from the entire trace
     into a single, consolidated report that summarizes all issues and root causes.
     """
-    emit_message("bot", "The lineage trace is complete. Here is the final root cause summary.")
-    
+    # emit_message("bot", "The lineage trace is complete. Here is the final root cause summary.")
+    emit_step_title("bot", "", "Final Root Cause Summary")
     trace_data = state.get("trace_data", {})
     all_mismatches = state.get("mismatched_nodes", [])
 
@@ -1228,10 +1260,10 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                 else:
                     final_summary = f"The {' and '.join(root_cause_details)} have deviated from their historical trends. This directly affected the downstream analysis."
                 
-                emit_message("final_summary", final_summary)
+                emit_message("bot", final_summary)
             else:
-                emit_message("final_summary", "Analysis completed with no definitive root cause identified in the traced lineage.")
-            
+                emit_message("bot", "Analysis completed with no definitive root cause identified in the traced lineage.")
+
             # Emit feedback request and action buttons
             emit_message("bot", "Was this helpful?")
             emit_message("action_buttons", "", {
@@ -1323,8 +1355,24 @@ def main():
     """
     try:
         # Read input from stdin (sent by Node.js)
-        input_data = sys.stdin.read().strip()
+        # input_data = sys.stdin.read().strip()
+        parser = argparse.ArgumentParser(description='Root Cause Analysis Tool')
+        parser.add_argument('--json', type=str, help='JSON input as string')
+        parser.add_argument('--file', type=str, help='Path to JSON file')
+        args = parser.parse_args()
         
+        input_data = None
+        
+        if args.json:
+            # JSON provided as command line argument
+            input_data = args.json
+        elif args.file:
+            # JSON provided as file path
+            with open(args.file, 'r') as f:
+                input_data = f.read()
+        else:
+            # Read from stdin (original behavior for Node.js)
+            input_data = sys.stdin.read().strip()
         if not input_data:
             emit_message("error", "No input data received")
             return
@@ -1336,19 +1384,19 @@ def main():
             emit_message("error", f"Invalid JSON input: {e}")
             return
         
-        emit_message("bot", "Starting Root Cause Analysis process...")
+        emit_message("bot", "I got your issue. Let me start analyzing the data to identify the root cause")
         emit_progress("workflow", "started", {"input_received": True})
         
         # Run the workflow
-        final_state = app.invoke(user_input)
+        app.invoke(user_input)
         
         emit_progress("workflow", "completed")
         emit_message("bot", "Root Cause Analysis completed successfully!")
-        
+
     except Exception as e:
         error_msg = f"Error in main execution: {str(e)}"
         logger.error(error_msg)
-        emit_message("error", error_msg)
+        # emit_message("error", error_msg)
 
 if __name__ == "__main__":
     main()

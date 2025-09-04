@@ -1,4 +1,5 @@
 import json
+import sys
 from typing import TypedDict, List, Dict, Any, Optional, Tuple
 from langgraph.graph import StateGraph, END, START
 import logging
@@ -17,22 +18,96 @@ import warnings
 import numpy as np
 import ast
 import configparser
-import streamlit as st
 from datetime import datetime
 import uuid
-from pyvegas.helpers.utils import set_proxy, unset_proxy
-from pyvegas.langx import VegasLangchainLLM
 
-set_proxy()
+# Custom stdout wrapper to ensure only JSON messages go to stdout
+class JSONOnlyStdout:
+    """Custom stdout that only allows JSON messages through."""
+    
+    def __init__(self, original_stdout, original_stderr):
+        self.original_stdout = original_stdout
+        self.original_stderr = original_stderr
+    
+    def write(self, text):
+        """Only write JSON messages to stdout, everything else to stderr."""
+        text = str(text)
+        if text.strip():
+            # Check if this looks like a JSON message
+            stripped = text.strip()
+            if stripped.startswith('{') and stripped.endswith('}'):
+                try:
+                    json.loads(stripped)  # Validate it's valid JSON
+                    self.original_stdout.write(text)
+                    self.original_stdout.flush()
+                    return
+                except (json.JSONDecodeError, ValueError):
+                    pass  # Not valid JSON, redirect to stderr
+            
+            # Not JSON, send to stderr
+            self.original_stderr.write(text)
+            self.original_stderr.flush()
+    
+    def flush(self):
+        self.original_stdout.flush()
+        self.original_stderr.flush()
+    
+    def __getattr__(self, name):
+        # Delegate other attributes to original stdout
+        return getattr(self.original_stdout, name)
+
+# Redirect all stdout through our JSON filter
+original_stdout = sys.stdout
+original_stderr = sys.stderr
+sys.stdout = JSONOnlyStdout(original_stdout, original_stderr)
+
+# Configure logging properly
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stderr),  # Send logs to stderr to avoid interfering with stdout JSON messages
+        logging.FileHandler(os.path.join(os.path.dirname(__file__), 'agentic_dq.log'), mode='a')
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+# Disable stdout logging for all loggers to prevent contamination
+logging.getLogger().handlers = [h for h in logging.getLogger().handlers if not isinstance(h, logging.StreamHandler) or h.stream != sys.stdout]
+
+# Set all loggers to use stderr only
+for name in logging.root.manager.loggerDict:
+    log = logging.getLogger(name)
+    log.handlers = [h for h in log.handlers if not isinstance(h, logging.StreamHandler) or h.stream != sys.stdout]
+
+# Configure loguru if it's imported by dependencies
+try:
+    from loguru import logger as loguru_logger
+    loguru_logger.remove()  # Remove default handler
+    loguru_logger.add(sys.stderr, format="{time} - {name} - {level} - {message}")
+except ImportError:
+    pass  # loguru not available
 
 warnings.filterwarnings('ignore')
 # Configure logging
 # logger.basicConfig(level=logger.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-logger = logging.getLogger(__name__)
-
+# Environment-based configuration
 config = configparser.ConfigParser()
-config_file_path = os.path.join("/apps/opt/application/dev_smartdq/dev/agentic_dq/config", 'config.ini')
+
+# Determine config path based on environment
+environment = os.getenv('ADQ_ENVIRONMENT', 'local')
+if environment == 'local':
+    config_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", 'config.ini')
+elif environment == 'dev':
+    config_file_path = '/apps/opt/application/dev_smartdq/dev/agentic_dq/config/config.ini'
+elif environment == 'prod':
+    config_file_path = '/apps/opt/application/prod_smartdq/prod/agentic_dq/config/config.ini'
+else:
+    # Default fallback
+    config_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", 'config.ini')
+
 files_read = config.read(config_file_path)
 
 SA_PATH = config['paths']['SA_PATH']
@@ -54,6 +129,12 @@ USER_AVATAR = "👤"
 BOT_AVATAR = "🤖"
 CHATBOT_NAME = "ADQ"
 
+try:
+    del os.environ['http_proxy']
+    del os.environ['https_proxy']
+    del os.environ['no_proxy']
+except:
+    pass
 warnings.filterwarnings('ignore')
 # Configure logging
 # logger.basicConfig(level=logger.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -61,10 +142,55 @@ warnings.filterwarnings('ignore')
 os.environ["VEGAS_API_KEY"] = VEGAS_API_KEY
 os.environ["ENVIRONMENT"] = ENVIRONMENT
 
-usecase_name = USECASE_NAME # Add your vegas usecase name here
-context_name = CONTEXT_NAME # Add your vegas context name here
+# usecase_name = "adq_agent_data_volume" # Add your vegas usecase name here
+# context_name = "adq_data_volume_context" # Add your vegas context name here
+usecase_name = "adq_data_error" # Add your vegas usecase name here
+context_name = "adq_data_error" # Add your vegas context name here
 
-llm = VegasLangchainLLM(usecase_name =usecase_name, context_name = context_name, temperature=0)
+#usecase_name = USECASE_NAME
+#context_name = CONTEXT_NAME
+
+# Import pyvegas LLM
+try:
+    from pyvegas.helpers.utils import set_proxy, unset_proxy
+    from pyvegas.langx.llm import VegasChatLLM
+    
+    # Configure loguru if it was imported by pyvegas (ensure stderr output)
+    try:
+        from loguru import logger as loguru_logger
+        loguru_logger.remove()  # Remove default handler that might output to stdout
+        loguru_logger.add(sys.stderr, format="{time} - {name} - {level} - {message}")
+    except ImportError:
+        pass  # loguru not available or already configured
+    
+    # Initialize pyvegas LLM
+    set_proxy()
+    llm = VegasChatLLM(usecase_name=usecase_name, context_name=context_name, temperature=0)
+    PYVEGAS_AVAILABLE = True
+    logger.info(f"SUCCESS: pyvegas LLM initialized successfully with usecase: {usecase_name}, context: {context_name}")
+
+except Exception as e:
+    logger.error(f"ERROR: pyvegas initialization failed: {e}")
+    logger.critical("CRITICAL: Cannot proceed without pyvegas LLM")
+    # Send error to frontend and exit using unified messaging
+    def send_message_fallback(message_type: str, content: str = "", title: str = "", **kwargs):
+        """Fallback function for sending messages during initialization"""
+        try:
+            message = {
+                "title": title,
+                "type": message_type,
+                "content": content,
+                "timestamp": datetime.now().isoformat()
+            }
+            json_message = json.dumps(message, ensure_ascii=False)
+            print(json_message, flush=True)
+        except Exception as e:
+            # Final fallback to basic print
+            print(f"ERROR: Failed to send fallback message: {e}", file=sys.stderr)
+            print(json.dumps({"type": "error", "content": str(e), "timestamp": datetime.now().isoformat()}), flush=True)
+    
+    send_message_fallback("error", f"Failed to initialize pyvegas LLM: {str(e)}", "Initialization Error")
+    sys.exit(1)
 
 json_parser = JsonOutputParser()
 
@@ -87,44 +213,218 @@ class RootCauseAnalysisState(TypedDict):
     anamoly_node_response: str
     loaded_lineage_graphs : Optional[Dict[str, nx.DiGraph]]
 
-def display_message(role: str, content: str):
-    if role == "bot":
-        st.markdown(
-            f'''
-            <div style="
-                max-width: 70%;
-                background-color: #f1f3f4;
-                padding: 10px 15px;
-                margin: 10px 0;
-                border: 1px solid #ccc;
-                border-radius: 10px;
-                float: left;
-                clear: both;">
-                <b>{BOT_AVATAR} {CHATBOT_NAME}</b><br>
-                <pre style="margin:0;">{content}</pre>
-            </div>
-            ''', unsafe_allow_html=True
-        )
-    elif role == "user":
-        st.markdown(
-            f'''
-            <div style="
-                max-width: 70%;
-                background-color: #dbeafe;
-                padding: 10px 15px;
-                margin: 10px 0;
-                border: 1px solid #ccc;
-                border-radius: 10px;
-                float: right;
-                clear: both;
-                text-align: right;">
-                <b>{USER_AVATAR}</b>
-                <pre style="margin:0;">{content}</pre>
-            </div>
-            ''', unsafe_allow_html=True
-        )
+# Global variable to track if we're running in web mode
+WEB_MODE = True  # Set to True for web mode by default
 
-                
+def send_message(message_type: str, content: str = "", title: str = "", data: dict = None, **kwargs):
+    """
+    Unified message sender for all communication from Python to Node.js
+    Sends plain text JSON messages (one per line) for reliable parsing.
+    Maps internal message types to those expected by Node.js and React frontend.
+    
+    Args:
+        message_type: Type of message ('update', 'step_result', 'node_status', 'lineage_tree', 'error', 'node_response')
+        content: Main message content
+        title: Message title (optional)
+        data: Additional data payload (optional)
+        **kwargs: Additional message-specific parameters
+    """
+    if not WEB_MODE:
+        # Console mode - send logs to stderr to avoid contaminating stdout
+        if message_type == "step_result":
+            step_number = kwargs.get('step_number', 0)
+            logger.info(f"\n{'='*60}")
+            logger.info(f"STEP {step_number}: {title}")
+            logger.info(f"{'='*60}")
+            logger.info(content)
+            if data:
+                logger.info(f"Data: {data}")
+            logger.info(f"{'='*60}\n")
+        elif message_type == "node_status":
+            node_id = kwargs.get('node_id', '')
+            status = kwargs.get('status', '')
+            logger.info(f"📊 NODE STATUS: {node_id} -> {status}")
+            if content:
+                logger.info(f"   Message: {content}")
+        elif message_type == "node_response":
+            node_name = kwargs.get('node_name', '')
+            logger.info(f"🔗 NODE RESPONSE: {node_name}")
+            logger.info(f"   {content}")
+        else:
+            logger.info(f"🤖 {title}: {content}")
+        return
+
+    # Web mode - send structured message to Node.js
+    message = {
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # Map internal message types to frontend-expected types
+    type_mapping = {
+        "update": "progress",              # Progress updates
+        "node_response": "analysis_result", # Analysis results
+        "node_status": "node_status_update", # Node status updates
+        "lineage_tree": "lineage_graph",   # Lineage graph data
+        "step_result": "step_result",      # Step results (no change)
+        "error": "error",                  # Errors (no change)
+        "final_report": "final_report",    # Final reports (no change)
+        "table_data": "table_data"         # Table data (no change)
+    }
+    
+    # Use mapped type
+    mapped_type = type_mapping.get(message_type, message_type)
+    
+    if message_type == "update":
+        message.update({
+            "title": title,
+            "type": "progress", 
+            "content": content,
+            "data": data or {}
+        })
+        
+    elif message_type == "step_result":
+        step_number = kwargs.get('step_number', 0)
+        message.update({
+            "title": f"Step {step_number}: {title}",
+            "type": "step_result",
+            "content": content,
+            "step_number": step_number,
+            "data": data or {}
+        })
+        
+    elif message_type == "node_response":
+        # Real-time node response for immediate feedback
+        node_name = kwargs.get('node_name', title)
+        message.update({
+            "title": title or f"{node_name} Complete",
+            "type": "analysis_result",
+            "content": content,
+            "node_name": node_name,
+            "data": data or {}
+        })
+        
+    elif message_type == "node_status":
+        node_id = kwargs.get('node_id', '')
+        status = kwargs.get('status', '')
+        # Map internal status to frontend status
+        status_mapping = {
+            'checking': 'checking',
+            'completed_success': 'match', 
+            'completed_failure': 'mismatch'
+        }
+        frontend_status = status_mapping.get(status, status)
+        
+        message.update({
+            "type": "node_status_update",
+            "nodeId": node_id,
+            "status": frontend_status,
+            "message": content,
+            "data": data or {}
+        })
+        
+    elif message_type == "lineage_tree":
+        message.update({
+            "type": "lineage_graph",
+            "nodes": kwargs.get('nodes', []),
+            "edges": kwargs.get('edges', []),
+            "data": data or {}
+        })
+        
+    elif message_type == "error":
+        message.update({
+            "title": title or "Error",
+            "type": "error",
+            "content": content,
+            "data": data or {}
+        })
+    
+    elif message_type == "table_data":
+        message.update({
+            "title": title or "Table Data",
+            "type": "table_data",
+            "content": content,
+            "data": data or {}
+        })
+    
+    else:
+        # Default fallback - use mapped type
+        message.update({
+            "title": title,
+            "type": mapped_type,
+            "content": content,
+            "data": data or {}
+        })
+    
+    # Send plain text JSON message (one message per line)
+    try:
+        json_message = json.dumps(message, ensure_ascii=False)
+        print(json_message, flush=True)
+    except Exception as e:
+        # Fallback error handling
+        print(f"ERROR: Failed to send message: {e}", file=sys.stderr)
+        print(json.dumps({"type": "error", "content": str(e), "timestamp": datetime.now().isoformat()}), flush=True)
+
+# Legacy compatibility wrappers for emit functions - maps to new send_message function
+def emit_message(message_type: str, content: str, metadata: Dict = None):
+    """Legacy compatibility wrapper - maps to send_message"""
+    if message_type == "bot":
+        send_message("node_response", content, "Bot Message", data=metadata)
+    elif message_type == "error":
+        send_message("error", content, "Error", data=metadata)
+    elif message_type == "analysis_result":
+        send_message("node_response", content, "Analysis Result", data=metadata)
+    elif message_type == "analysis_detail":
+        send_message("node_response", content, "Analysis Detail", data=metadata)
+    elif message_type == "final_report":
+        send_message("final_report", content, "Final Report", data=metadata)
+    elif message_type == "final_summary":
+        send_message("final_report", content, "Final Summary", data=metadata)
+    elif message_type == "action_buttons":
+        send_message("node_response", content, "Action Buttons", data=metadata)
+    else:
+        send_message("node_response", content, message_type, data=metadata)
+
+def emit_lineage_graph(graph_data: Dict):
+    """Legacy compatibility wrapper"""
+    send_message("lineage_tree", nodes=graph_data.get("nodes", []), edges=graph_data.get("edges", []))
+
+def emit_node_status_update(node_id: str, status: str):
+    """Legacy compatibility wrapper"""
+    send_message("node_status", "", node_id=node_id, status=status)
+
+def emit_step_result(step_number: int, step_type: str, table: str, column: str, sql_query: str, result: str, status: str = "success"):
+    """Legacy compatibility wrapper"""
+    data = {
+        "step_number": step_number,
+        "step_type": step_type,
+        "table": table,
+        "column": column,
+        "sql_query": sql_query,
+        "result": result,
+        "status": status
+    }
+    send_message("step_result", result, f"Step {step_number}", data=data, step_number=step_number)
+
+def emit_progress(step_name: str, status: str, details: Dict = None):
+    """Legacy compatibility wrapper"""
+    send_message("update", f"{step_name}: {status}", step_name, data=details)
+
+def emit_analysis_result(layer: str, table: str, column: str, sql_query: str, reasoning: str, inference: str):
+    """Legacy compatibility wrapper"""
+    data = {
+        "layer": layer,
+        "table": table,
+        "column": column,
+        "sql_query": sql_query,
+        "reasoning": reasoning,
+        "inference": inference
+    }
+    send_message("step_result", f"{layer} Analysis: {reasoning}", "Analysis Result", data=data)
+
+def emit_table_data(data: Dict, title: str):
+    """Legacy compatibility wrapper"""
+    send_message("table_data", f"Table data: {title}", title, data=data)
+
 def isTokenExpired(path):
     try:
         if(os.path.exists(OIDC_TOKEN_PATH)):
@@ -145,6 +445,9 @@ def isTokenExpired(path):
         raise e
     
 def exchange_and_save_oidc_token_for_jwt(client_id:str, client_secret:str) -> None:
+    os.environ['http_proxy'] = 'http://proxy.ebiz.verizon.com:80/'
+    os.environ['https_proxy'] = 'http://proxy.ebiz.verizon.com:80/'
+    os.environ['no_proxy'] = 'http://proxy.ebiz.verizon.com:80/'
     logger.info('Retrieving JWT from OIDC provider...')
     url = 'https://ssologinuat.verizon.com/ngauth/oauth2/realms/root/realms/employee/access_token'
     #url = 'https://ssologin.verizon.com/ngauth/oauth2/realms/root/realms/employee/access_token' # production url
@@ -163,50 +466,77 @@ def exchange_and_save_oidc_token_for_jwt(client_id:str, client_secret:str) -> No
         raise e
 
 def bigquery_execute(query: str) -> pd.DataFrame:
-    #clientid and secret should be vaulted
+    """
+    Execute BigQuery SQL with comprehensive error handling and retry logic
+    """
+    # clientid and secret should be vaulted
     client_id = CLIENT_ID
     client_secret = CLIENT_SECRET
     project_id = PROJECT_ID
-    # get a jwt
-    if isTokenExpired(OIDC_TOKEN_PATH):
-        exchange_and_save_oidc_token_for_jwt(client_id=client_id,client_secret=client_secret)
-    # set the GOOGLE_APPLICATION_ENVIRONMENT
-    logger.info('Setting environment variable...')
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = SA_PATH
-    os.environ['GOOGLE_CLOUD_PROJECT']= GOOGLE_CLOUD_PROJECT
-    credentials, auth_project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-
-    logger.info(f"project_id={project_id}, credentials={credentials}")
+    
     try:
+        # get a jwt
+        if isTokenExpired(OIDC_TOKEN_PATH):
+            exchange_and_save_oidc_token_for_jwt(client_id=client_id, client_secret=client_secret)
+        
+        # set the GOOGLE_APPLICATION_ENVIRONMENT
+        logger.info('Setting environment variable...')
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = SA_PATH
+        os.environ['GOOGLE_CLOUD_PROJECT'] = GOOGLE_CLOUD_PROJECT
+        credentials, auth_project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+
+        logger.info(f"project_id={project_id}, credentials={credentials}")
+        
         client = bigquery.Client(credentials=credentials, project=project_id)
         logger.info(f"Query: {query}")
-        df_results = client.query(query).to_dataframe()
+        
+        # Execute query with timeout
+        query_job = client.query(query)
+        df_results = query_job.to_dataframe(progress_bar_type=None)
+        
+        logger.info(f"Query executed successfully, returned {len(df_results)} rows")
         return df_results
-    except Exception as e :
+        
+    except Exception as e:
         error_message = f"Error executing BigQuery query: {e}"
-        logger.info(error_message)
-        return error_message
+        logger.error(error_message)
+        
+        # Return empty DataFrame with error indicator for graceful degradation
+        error_df = pd.DataFrame({'error': [error_message]})
+        return error_df
 
 def extract_metric_from_output(df_json, sql_query) -> Optional[float]:
     """Safely extracts the first numeric value from a query output."""
-    actual_value_prompt = f"""You are a precise data extraction bot. Your task is to analyze a JSON dataset and extract a single numeric value. 
-                            **Dataset (JSON):**\n```json\n{df_json}\n``` 
-                            **SQL Query that generated the data:**\n```sql\n{sql_query}\n``` 
-                            **Instructions:** 
-                            1. **Identify the Metric Column:** From the SQL query, determine the name of the primary metric column (e.g., the result of a SUM, COUNT). 
-                            2. **Return the Value:** Return **only the numeric value** from that specific cell. Do not include any other text. **Example Output:**\n1234.56"""
-                            
+    
     try:
+        # First check if we received an error DataFrame
+        df_data = json.loads(df_json)
+        if isinstance(df_data, list) and len(df_data) > 0:
+            first_row = df_data[0]
+            if 'error' in first_row:
+                logger.warning(f"Received error from query execution: {first_row['error']}")
+                return 0.0
+        
+        actual_value_prompt = f"""You are a precise data extraction bot. Your task is to analyze a JSON dataset and extract a single numeric value. 
+                                **Dataset (JSON):**\n```json\n{df_json}\n``` 
+                                **SQL Query that generated the data:**\n```sql\n{sql_query}\n``` 
+                                **Instructions:** 
+                                1. **Identify the Metric Column:** From the SQL query, determine the name of the primary metric column (e.g., the result of a SUM, COUNT). 
+                                2. **Return the Value:** Return **only the numeric value** from that specific cell. Do not include any other text. **Example Output:**\n1234.56"""
+                                
         response = llm.invoke(actual_value_prompt).content.strip()
         match = re.search(r"[-+]?\d*\d\.?\d+", response)
         if match:
-            return float(match.group(0))
+            value = float(match.group(0))
+            logger.info(f"Extracted metric value: {value}")
+            return value
         else:
-            logger.info(f"LLM didnt return the actual value:{response}")
-            return 0
-    except:
-        logger.error("Failed to get actual value")
-        return None
+            logger.warning(f"LLM didn't return valid number: {response}")
+            return 0.0
+            
+    except Exception as e:
+        logger.error(f"Failed to extract metric: {e}")
+        return 0.0
 
 def get_predecessor_info(node_name: str, lineage_graph: nx.DiGraph) -> List[Dict[str, str]]:
     """
@@ -215,34 +545,35 @@ def get_predecessor_info(node_name: str, lineage_graph: nx.DiGraph) -> List[Dict
     """
     predecessors_list = []
 
-    # In a DiGraph from lineage, successors of a node are its upstream sources.
-    for pred_node in lineage_graph.successors(node_name):
-        # The edge from node_name to pred_node describes the transformation
-        transformation = lineage_graph.edges[node_name, pred_node].get('transformation', 'N/A')
-        predecessors_list.append({
-            'prev_table': pred_node.rsplit('.', 1)[0],
-            'prev_column': pred_node.rsplit('.', 1)[1],
-            'transformation': transformation,
-            'source_node_full_name': pred_node
-        })
-
+    try:
+        # In a DiGraph from lineage, successors of a node are its upstream sources.
+        for pred_node in lineage_graph.successors(node_name):
+            # The edge from node_name to pred_node describes the transformation
+            transformation = lineage_graph.edges[node_name, pred_node].get('transformation', 'N/A')
+            predecessors_list.append({
+                'prev_table': pred_node.rsplit('.', 1)[0],
+                'prev_column': pred_node.rsplit('.', 1)[1],
+                'transformation': transformation,
+                'source_node_full_name': pred_node
+            })
+    except Exception as e:
+        logger.error(f"Error getting predecessor info for {node_name}: {e}")
+    
     return predecessors_list
 
-def replace_technical_date_with_business_date(sql_query : str, table_name : str):
-    logger.info('Updating the Query technical dates with business dates')
+def replace_technical_date_with_business_date(sql_query: str, table_name: str) -> str:
+    """Replace technical date columns with business date columns"""
+    try:
+        logger.info('Updating query technical dates with business dates')
+        date_df = pd.read_csv(RULES_CSV_PATH)
+        row = date_df[date_df['BQ Table Name'].str.lower() == table_name.lower()]
     
-    print("Query before replacing business date : ", sql_query)
-    
-    date_df = pd.read_csv(RULES_CSV_PATH)
-    row = date_df[date_df['BQ Table Name'].str.lower() == table_name.lower()]
-    
-    if row.empty:
-        return sql_query
-    else:
-        business_date = row['Business date'].values[0]
-        print("table and column name",table_name, business_date)
+        if row.empty:
+            return sql_query
+        else:
+            business_date = row['Business date'].values[0]
         
-        business_date_prompt = f"""You are an expert SQL refactoring assistant. Your task is to analyze an incoming SQL query and replace any technical date-related column names with a specified "business date" column name. You must be very careful to only change the column name and NOT the date values or any other part of the query.
+            business_date_prompt = f"""You are an expert SQL refactoring assistant. Your task is to analyze an incoming SQL query and replace any technical date-related column names with a specified "business date" column name. You must be very careful to only change the column name and NOT the date values or any other part of the query.
 
                                 **Your Instructions:**
                                 1.  **Analyze the SQL Query:** Carefully examine the provided SQL query.
@@ -282,10 +613,60 @@ def replace_technical_date_with_business_date(sql_query : str, table_name : str)
                                 **Your Final Output:**
                                 Return only the complete, modified SQL query. Do not add any explanations, markdown formatting, or introductory text."""
         
-        raw_sql_query = llm.invoke(business_date_prompt).content
-        sql_query = extract_sql_from_text(raw_sql_query)
-        print("Query after replacing business date : ", sql_query)
+            raw_sql_query = llm.invoke(business_date_prompt).content
+            sql_query = extract_sql_from_text(raw_sql_query)
+            return sql_query
+    except Exception as e:
+        logger.error(f"Error updating query technical dates: {e}")
         return sql_query
+    
+def build_graph_structure_from_lineage(lineage_graph: nx.DiGraph, l0_key: str) -> Dict:
+    """Convert NetworkX lineage graph to frontend-compatible graph structure"""
+    try:
+        nodes = []
+        edges = []
+        tables_added = set()
+        
+        for node in lineage_graph.nodes():
+            try:
+                if '.' in node:
+                    table_name, column_name = node.rsplit('.', 1)
+                    table_display_name = table_name.rsplit('.', 1)[-1] if '.' in table_name else table_name
+                else:
+                    table_display_name = node
+                    column_name = node
+                
+                # Add table node if not already added
+                if table_display_name not in tables_added:
+                    nodes.append({
+                        "id": table_display_name,
+                        "label": table_display_name,
+                        "type": "table"
+                    })
+                    tables_added.add(table_display_name)
+                
+                # Add column node
+                nodes.append({
+                    "id": node,
+                    "label": column_name,
+                    "type": "column",
+                    "parent": table_display_name
+                })
+            except Exception as e:
+                logger.warning(f"Error processing node {node}: {e}")
+                continue
+        
+        # Add edges
+        for source, target in lineage_graph.edges():
+            edges.append({"source": source, "target": target})
+        
+        return {"nodes": nodes, "edges": edges}
+        
+    except Exception as e:
+        logger.error(f"Error building graph structure: {e}")
+        return {"nodes": [], "edges": []}
+
+
 
 def extract_sql_from_text(text: str) -> str:
     """Extracts the SQL query from the LLM response."""
@@ -298,7 +679,7 @@ def extract_sql_from_text(text: str) -> str:
         if match_cte:
             query = match_cte.group(1).strip()
             return query
-    return text # Return original text if no SQL found
+    return text.strip()  # Return original text if no SQL found
 
 def anamoly_identifier_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     user_input = state
@@ -317,11 +698,14 @@ def anamoly_identifier_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
 
     response = llm.invoke(prompt).content
     failed_rule = user_input["validation_query"]
-    # st.session_state.messages.append({"role": "bot", "content": response})
-    display_message("bot", response) # Make sure display_message is defined
+
+    # Send node response using unified messaging
+    send_message("node_response", response, "Anomaly Analysis Complete", node_name="anamoly_identifier_node")
     return {"anamoly_node_response": response, "validation_query": failed_rule}
 
 def analysis_decision_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
+    send_message("update", "Determining analysis approach", "Analysis Decision")
+    
     decider_prompt = f"""As an expert SQL analyst, your task is to determine how columns in a data quality validation query contribute to metrics.
                     Analyze the provided SQL query to identify if:
                     1.  **Each column contributes to a distinct validation metric. In this case, the `path_to_follow` is "Equality".
@@ -343,13 +727,27 @@ def analysis_decision_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     logger.info(f'Deciding the path. Analysis Type : {analysis_method}')
 
     if analysis_method['path_to_follow'] == "Equality":
-        display_message("bot", f"Based on provided inputs, proceeding with the failed column as the starting point for our root cause analysis.")
+        message = "Based on provided inputs, proceeding with the failed column as the starting point for our root cause analysis."
     else:
-        display_message("bot", f"Based on provided inputs, multiple columns are involved in this validation metric, we'll run a statistical check at the L0 layer to pinpoint the problematic column.")
+        message = "Based on provided inputs, multiple columns are involved in this validation metric, we'll run a statistical check at the L0 layer to pinpoint the problematic column."
+    
+    # Print to console for command-line testing
+    if not WEB_MODE:
+        print(f"\n{'='*60}")
+        print("🎯 ANALYSIS DECISION NODE RESPONSE")
+        print(f"{'='*60}")
+        print(f"Path to follow: {analysis_method['path_to_follow']}")
+        print(f"Decision: {message}")
+        print(f"{'='*60}\n")
 
-    return {'analysis_method' : analysis_method['path_to_follow']}
+    send_message("node_response", message, "Analysis Decision Complete", 
+                data={"path": analysis_method['path_to_follow']}, node_name="analysis_decision_node")
+
+    return {'analysis_method': analysis_method['path_to_follow']}
 
 def parse_dq_query_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
+    send_message("update", "Parsing DQ validation query", "Parse DQ Query")
+    
     validation_query = state['validation_query']
     prompt = f"""
             You are a SQL expert. Analyze the following data quality validation SQL query.
@@ -396,14 +794,28 @@ def parse_dq_query_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     logger.info("Parsing DQ query...")
     parser_chain = llm | json_parser
     parsed_info = parser_chain.invoke(prompt)
+    try:
+        del os.environ['http_proxy']
+        del os.environ['https_proxy']
+        del os.environ['no_proxy']
+    except:
+        pass
     logger.info(f"Parsed DQ Info: {parsed_info}")
 
     if 'parsed_dq_info' in parsed_info and isinstance(parsed_info['parsed_dq_info'], dict):
         parsed_info = parsed_info['parsed_dq_info']
-        
-    display_message("bot",f"Based on your inputs, here are the tables, columns, filters, group by, and aggregation functions found.")
-
-    st.json(f"{parsed_info}")
+    
+    # Print to console for command-line testing
+    if not WEB_MODE:
+        print(f"\n{'='*60}")
+        print("📊 PARSE DQ QUERY NODE RESPONSE")
+        print(f"{'='*60}")
+        print(json.dumps(parsed_info, indent=2))
+        print(f"{'='*60}\n")
+    
+    send_message("node_response", "DQ query parsing completed", "Parse DQ Query Complete", 
+                data=parsed_info, node_name="parse_dq_query_node")
+    
     return {"parsed_dq_info": parsed_info}
 
 def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
@@ -411,8 +823,9 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     Initializes the trace, performs the L0 statistical check, and formats the result
     into the new enriched trace_data structure.
     """
+    emit_progress("initialize_trace", "started", {"step": "Performing L0 layer analysis"})
+    emit_message("bot", "Identifying columns for root cause analysis and performing initial L0 checks...")
 
-    display_message('bot', "Identifying columns for root cause analysis and performing initial L0 checks...")
     parsed_info = state['parsed_dq_info']
     trace_data = {}
     paths_to_process = []
@@ -448,6 +861,13 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
              - Generated SQL query should only have column {column} for DQ rule validation.
              - If there are any division or multiplier then use the same on individual column.
             """
+
+            try:
+                del os.environ['http_proxy']
+                del os.environ['https_proxy']
+                del os.environ['no_proxy']
+            except:
+                pass
 
             l0_query = extract_sql_from_text(llm.invoke(l0_sql_prompt).content)
             l0_query = replace_technical_date_with_business_date(l0_query, table.rsplit('.', 1)[-1])
@@ -506,25 +926,48 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                     logger.info(f"Successfully loaded lineage graph for '{l0_key}' from {graph_file_path}")
                 except:
                     logger.info(f"Error in loading lineage graph for '{l0_key}' from {graph_file_path}")
-                display_message("bot", f""" Analysing the data on L0 layer for <b>{column}</b><br><br>
-                                        <b>Reasoning:</b> {reasoning}<br><br>
-                                        <b>SQL query for actual value:</b><br>
-                                        <pre><code>{l0_query}</code></pre><br>
-                                        <b>SQL query for SD and EV:</b><br>
-                                        <pre><code>{std_dev_sql}</code></pre><br>
-                                        A significant deviation has been detected in the {column} column's values over the past month. A lineage trace is necessary to uncover the root cause.
-                                        """)
+                
+                inference = f"A significant deviation has been detected in the {column} column's values over the past month. A lineage trace is necessary to uncover the root cause."
             else:
+                inference = f"The data in column {column} falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary."
 
-                display_message("bot", f"""Analysing the data on L0 layer for <b>{column}</b><br><br>
-                                        <b>Reasoning:</b> {reasoning}<br><br>
-                                        <b>SQL query for actual value:</b><br>
-                                        <pre><code>{l0_query}</code></pre><br>
-                                        <b>SQL query for SD and EV:</b><br>
-                                        <pre><code>{std_dev_sql}</code></pre><br>
-                                        The data in column <b>{column}</b> falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary.
-                                        """)
-
+            emit_analysis_result("L0", table, column, l0_query, reasoning, inference)
+    # Print to console for command-line testing
+    if not WEB_MODE:
+        print(f"\n{'='*60}")
+        print("🔍 INITIALIZE TRACE NODE RESPONSE")
+        print(f"{'='*60}")
+        print(f"Columns requiring root cause analysis: {len(paths_to_process)}")
+        for _, table, column, _ in paths_to_process:
+            print(f"  - {table}.{column}")
+        print(f"Initial check results:")
+        for table, table_results in trace_data.items():
+            for column, column_results in table_results.items():
+                for check_result in column_results:
+                    status = "OUT OF BOUNDS" if check_result["is_mismatch"] else "WITHIN BOUNDS"
+                    print(f"  - {table}.{column}: {status}")
+                    print(f"    Actual: {check_result['actual_value']}, Range: [{check_result['lower_bound']:.2f}, {check_result['upper_bound']:.2f}]")
+        print(f"{'='*60}\n")
+    
+    # Send Step 1 result: Initial Anomaly Validation & Trend Analysis
+    if WEB_MODE:
+        step1_content = f"✅ Validation rule parsed and statistical analysis completed.\n\n"
+        step1_content += f"📊 Found {len(paths_to_process)} column(s) requiring root cause analysis:\n"
+        
+        for _, table, column, _ in paths_to_process:
+            table_short = table.split('.')[-1]
+            step1_content += f"• **{table_short}.{column}**\n"
+            
+        step1_content += f"\n🔍 Statistical trend analysis confirmed significant deviation (>3 standard deviations) from historical baseline."
+        
+        step1_data = {
+            "columns_analyzed": len(paths_to_process),
+            "problematic_columns": [{"table": table.split('.')[-1], "column": column} for _, table, column, _ in paths_to_process],
+            "validation_rule": state.get('validation_query', ''),
+            "threshold_type": "3_standard_deviations"
+        }
+    
+    emit_progress("initialize_trace", "completed", {"paths_found": len(paths_to_process)})
     logger.info(f"Initialized trace for {len(paths_to_process)} paths.")
     return {"trace_data": trace_data, "paths_to_process": paths_to_process, "mismatched_nodes": mismatched_nodes, "loaded_lineage_graphs" : loaded_graphs}
 
@@ -533,7 +976,9 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
     Performs the initial check for a single-column failure and formats the result
     into the new enriched trace_data structure.
     """
-    display_message('bot', "Performing initial check on L0 to validate the alert...")
+    # Action 1: Announce validation start
+    emit_message("bot", "This appears to be a single-column validation. I am now performing the initial check on layer L0 to validate the alert...")
+    
     validation_query = state['validation_query']
     failed_column = state['failed_column']
     failed_table = state['failed_table']
@@ -558,8 +1003,21 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
 
     is_out_of_bounds = not (lower_bound <= actual_value <= upper_bound) if actual_value is not None else True
 
-    reasoning = (f"Value {actual_value:.2f} is outside the specified threshold [{lower_bound:.2f}, {upper_bound:.2f}]."
-                 if is_out_of_bounds else f"Value {actual_value:.2f} is within the specified threshold.")
+    reasoning = (f"The actual value of {actual_value:.2f} is outside the specified threshold [{lower_bound:.2f}, {upper_bound:.2f}] based on historical data."
+                 if is_out_of_bounds else f"The actual value of {actual_value:.2f} is within the specified threshold.")
+
+    inference = ("Deviation confirmed. A lineage trace is necessary to uncover the root cause."
+                 if is_out_of_bounds else "No deviation found. Lineage tracing is not required.")
+
+    # Action 2: Emit structured analysis result
+    emit_message("analysis_result", "L0 Validation Result", {
+        "layer": "L0",
+        "table": failed_table.rsplit('.', 1)[-1],
+        "column": failed_column,
+        "sql_query": individual_query,
+        "reasoning": reasoning,
+        "inference": inference
+    })
 
     trace_data = {}
     paths_to_process = []
@@ -589,19 +1047,26 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
             logger.info(f"Successfully loaded lineage graph for '{l0_key}' from {graph_file_path}")
         except:
             logger.info(f"Error in loading lineage graph for '{l0_key}' from {graph_file_path}")
-        display_message("bot", f""" Analysing the data on L0 layer for <b>{failed_column}</b><br><br>
-                                    <b>Reasoning:</b> {reasoning}<br><br>
-                                    <b>SQL query for actual value:</b><br>
-                                    <pre><code>{individual_query}</code></pre><br>
-                                    A significant deviation has been detected in the {failed_column} column's values over the past month. A lineage trace is necessary to uncover the root cause.
-                                    """)
+        
+        # Emit detailed message for deviation found case
+        emit_message("bot", f"Analyzing the data on L0 layer for {failed_column}")
+        emit_message("analysis_detail", f"L0 Analysis - Deviation Detected", {
+            "column": failed_column,
+            "table": failed_table.rsplit('.', 1)[-1],
+            "reasoning": reasoning,
+            "sql_query": individual_query,
+            "conclusion": "A significant deviation has been detected in the column's values. A lineage trace is necessary to uncover the root cause."
+        })
     else:
-        display_message("bot", f""" Analysing the data on L0 layer for <b>{failed_column}</b><br><br>
-                                    <b>Reasoning:</b> {reasoning}<br><br>
-                                    <b>SQL query for actual value:</b><br>
-                                    <pre><code>{individual_query}</code></pre><br>
-                                    The data in column <b>{failed_column}</b> falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary.
-                                    """)
+        # Emit detailed message for no deviation case
+        emit_message("bot", f"Analyzing the data on L0 layer for {failed_column}")
+        emit_message("analysis_detail", f"L0 Analysis - No Deviation", {
+            "column": failed_column,
+            "table": failed_table.rsplit('.', 1)[-1],
+            "reasoning": reasoning,
+            "sql_query": individual_query,
+            "conclusion": f"The data in column {failed_column} falls within the expected range, indicating that lineage tracing isn't necessary."
+        })
 
     return {"trace_data": trace_data, "paths_to_process": paths_to_process, "mismatched_nodes": mismatched_nodes, "loaded_lineage_graphs" : loaded_graphs}
 
@@ -620,7 +1085,19 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("No paths left to process.")
         return {"paths_to_process": []}
 
-    display_message('bot', "Tracing one layer back in the lineage and comparing data values...")
+    # Emit step 3 message and lineage graph (only on first run)
+    first_run = any(step_num == 0 for step_num, _, _, _ in paths_to_process)
+    if first_run:
+        emit_message("bot", "Checking for upstream dependencies based on data lineage ...")
+        emit_message("bot", "Upstream dependencies based on data lineage")
+        
+        # Build and emit the initial graph structure
+        for _, _, _, l0_key in paths_to_process:
+            if l0_key in loaded_graphs:
+                graph_structure = build_graph_structure_from_lineage(loaded_graphs[l0_key], l0_key)
+                emit_lineage_graph(graph_structure)
+                break  # Only emit one graph structure
+
     next_paths_to_process = []
 
     for current_step_num, current_table, current_column, l0_key in paths_to_process:
@@ -655,6 +1132,19 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
         for pred in predecessors:
             pred_table, pred_column = pred['prev_table'], pred['prev_column']
             transformation_logic = pred['transformation']
+            pred_table_display = pred_table.rsplit('.', 1)[-1]
+            
+            # Emit checking status for nodes (Step B from requirements)
+            emit_node_status_update(pred_table_display, "checking")
+            emit_node_status_update(f"{pred_table}.{pred_column}", "checking")
+            
+            # Emit conversational message for checking specific column
+            emit_message("bot", f"Checking for {pred_column.upper()} Count ...")
+            emit_step_result(3, "lineage_check", pred_table, pred_column, "", 
+                           f"Identified the {pred_column} column originated from {pred_column} column from {pred_table_display} table.", "success")
+            
+            emit_message("bot", "I'm running the count checks for the previous date ...")
+            
             check_result = {}
 			
             if pred_column in ['close_yr_mth', 'bllr_bill_cyc_num']:
@@ -847,13 +1337,12 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
             trace_data[l0_table][l0_column].append(new_step_data)
 
             if check_result['is_mismatch']:
-                display_message("bot", f"""Traversing through lineage for <b>{current_column}</b><br><br>
-                                            <b>Layer Number:</b> {next_step_num}<br><br>
-                                            <b>Table Name:</b> {pred_table}<br><br>
-                                            <b>Column Name:</b> {pred_column}<br><br>
-                                            <b>SQL query:</b><br>
-                                            <pre><code>{backward_query}</code></pre><br><br>
-                                            <b>Inference:</b> DISCREPANCY FOUND at L{next_step_num} ({pred_table}.{pred_column}):<br><b>Reason:</b> {check_result['mismatch_reason']}""")
+                emit_node_status_update(f"{pred_table}.{pred_column}", "mismatch")
+                emit_node_status_update(pred_table_display, "mismatch")
+                
+                # Emit results message matching Figma design
+                emit_step_result(3, "count_check_result", pred_table, pred_column, "", 
+                               f"Results from count checks for the previous date: The deviation in {pred_column} < 10 originates from the {pred_column} column in the '{pred_table_display}' table, indicating an issue at this earlier stage.", "warning")
 
                 mismatched_nodes.append({
                     "l0_key": l0_key,
@@ -863,15 +1352,17 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 })
                 next_paths_to_process.append((next_step_num, pred_table, pred_column, l0_key))
             else:
-                display_message("bot", f"""Traversing through lineage for <b>{current_column}</b><br><br>
-                                            <b>Layer Number:</b> {next_step_num}<br><br>
-                                            <b>Table Name:</b> {pred_table}<br><br>
-                                            <b>Column Name:</b> {pred_column}<br><br>
-                                            <b>SQL query:</b><br>
-                                            <pre><code>{backward_query}</code></pre><br><br>
-                                            <b>Inference:</b> Data consistent at L{next_step_num} ({pred_table}.{pred_column}):<br><b>Reason:</b> {check_result['mismatch_reason']}""")
+                emit_node_status_update(f"{pred_table}.{pred_column}", "match")
+                emit_node_status_update(pred_table_display, "match")
+                
+                emit_step_result(3, "count_check_result", pred_table, pred_column, "", 
+                               f"Data consistent at {pred_table_display}.{pred_column} - no issues found.", "success")
 
-    print('next_paths_to_process', next_paths_to_process)
+    # Check if no further upstream tables are involved
+    if not next_paths_to_process and paths_to_process:
+        current_columns = [col for _, _, col, _ in paths_to_process]
+        emit_message("bot", f"No further upstream tables are involved in the lineage for {' or '.join(current_columns)}. Therefore, the analysis concludes here.")
+
     return {"trace_data": trace_data, "paths_to_process": next_paths_to_process, "mismatched_nodes": mismatched_nodes}
 
 def execute_and_correct_query(query, retries=3):
@@ -935,88 +1426,18 @@ def perform_statistical_check(table, column, query, actual_value):
     })
     return check_result
 
-
-def display_report_on_streamlit(report_data: dict, impacted_datasets):
-    """
-    Takes the final report JSON and renders it in Streamlit
-    using the specified template format.
-    """
-
-    rca_id = str(uuid.uuid4())[:8]
-    execution_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
-    
-    summary_df = pd.DataFrame([
-        {"Field": "RCA ID", "Description": rca_id},
-        {"Field": "Date/Time", "Description": execution_time},
-        {"Field": "Issue Detected", "Description": report_data.get("summary", {}).get("issue_detected", "N/A")},
-        {"Field": "Severity", "Description": report_data.get("summary", {}).get("severity", "N/A")},
-        {"Field": "Impacted Dataset(s)", "Description": json.dumps(impacted_datasets)},
-        {"Field": "Business Impact", "Description": report_data.get("summary", {}).get("business_impact", "N/A")},
-    ])
-
-    # st.table(summary_df)
-    
-    display_message('bot', f"""<b>1. Summary : </b><br><br>
-                                  {summary_df.to_html(justify='left',index=False)}""")
-
-
-    traversal_df = pd.DataFrame(report_data.get("lineage_traversal", []))
-    if not traversal_df.empty:
-        
-        display_message('bot', f"""<b>2. Pipeline Lineage Traversal Summary : </b><br><br>
-                                  {traversal_df.rename(columns={
-            "layer_step": "Layer / Step",
-            "dataset_table": "Dataset / Table",
-            "test_performed": "Test Performed"
-        }).to_html(justify='left',index=False)}""")
-    else:
-        st.write("N/A")
-
-    rca_df = pd.DataFrame([
-        {"Attribute": "Origin Node", "Details": report_data.get("root_cause_analysis", {}).get("origin_node", "N/A")},
-        {"Attribute": "Cause Identified", "Details": report_data.get("root_cause_analysis", {}).get("cause_identified", "N/A")},
-        {"Attribute": "RCA Type", "Details": report_data.get("root_cause_analysis", {}).get("rca_type", "N/A")},
-        {"Attribute": "Supporting Evidence", "Details": report_data.get("root_cause_analysis", {}).get("supporting_evidence", "N/A")},
-    ])
-    
-    display_message('bot', f"""<b>3. Root Cause Analysis: </b><br><br>
-                                  {rca_df.to_html(justify='left',index=False)}""")
-
-    justification_points = report_data.get("justification_reasoning", [])
-    if justification_points:
-        justification_text = "<br>".join([f"- {point}" for point in justification_points])
-        # st.markdown(justification_text)
-        display_message('bot', f"""<b>4. Justification & Reasoning: </b><br><br>
-                                  {justification_text}""")
-    else:
-        st.write("N/A")
-
-    report_data ={"closure": {
-                    "rca_status": "Open",
-                    "owner": "Data Engineering Team",
-                    "eta_for_fix": "N/A"
-                }}
-    closure_df = pd.DataFrame([
-        {"Field": "RCA Status", "Description": report_data.get("closure", {}).get("rca_status", "N/A")},
-        {"Field": "Owner", "Description": report_data.get("closure", {}).get("owner", "N/A")},
-        {"Field": "ETA for Fix", "Description": report_data.get("closure", {}).get("eta_for_fix", "N/A")},
-    ])
-    display_message('bot', f"""<b>5. Closure: </b><br><br>
-                                  {closure_df.to_html(justify='left',index=False)}""")
-    
-# --- The New Final Node for the Graph ---
 def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     """
     The final node in the graph. It synthesizes all findings from the entire trace
     into a single, consolidated report that summarizes all issues and root causes.
     """
-    st.header("Consolidated Root Cause Analysis Report")
-
+    emit_message("bot", "The lineage trace is complete. Here is the final root cause summary.")
+    
     trace_data = state.get("trace_data", {})
     all_mismatches = state.get("mismatched_nodes", [])
 
     if not trace_data:
-        st.error("Analysis failed: No trace data was generated.")
+        emit_message("error", "Analysis failed: No trace data was generated.")
         return {"analysis_results": {"error": "No trace data"}}
 
     # --- 1. GATHER AND CONSOLIDATE ALL DATA FROM THE ENTIRE TRACE ---
@@ -1112,15 +1533,59 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
             cleaned_report_str = match.group(1)
             report_data = json.loads(cleaned_report_str)
             
-            # Display the single, consolidated report
-            display_report_on_streamlit(report_data, impacted_datasets)
-            return {"analysis_results": report_data}
+            # Generate RCA ID and execution time
+            rca_id = str(uuid.uuid4())[:8]
+            execution_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+            
+            # Create final comprehensive report structure
+            final_report = {
+                "rca_id": rca_id,
+                "execution_time": execution_time,
+                "report_data": report_data,
+                "impacted_datasets": impacted_datasets
+            }
+            
+            # Emit the comprehensive final report
+            emit_message("final_report", "Root Cause Analysis Completed", {
+                "report": final_report
+            })
+            
+            # Generate friendly summary message for root cause
+            if deepest_failures:
+                root_cause_details = []
+                for failure in deepest_failures:
+                    details = failure['details']
+                    table_name = details['table_name'].rsplit('.', 1)[-1]
+                    column_name = details['column_name']
+                    root_cause_details.append(f"'{column_name}' column in the '{table_name}' table")
+                
+                if len(root_cause_details) == 1:
+                    final_summary = f"The {root_cause_details[0]} has deviated from its historical trend. This directly affected downstream columns in the target table."
+                else:
+                    final_summary = f"The {' and '.join(root_cause_details)} have deviated from their historical trends. This directly affected the downstream analysis."
+                
+                emit_message("final_summary", final_summary)
+            else:
+                emit_message("final_summary", "Analysis completed with no definitive root cause identified in the traced lineage.")
+            
+            # Emit feedback request and action buttons
+            emit_message("bot", "Was this helpful?")
+            emit_message("action_buttons", "", {
+                "buttons": [
+                    {"text": "Generate Summary Report", "action": "generate_report"},
+                    {"text": "Start New Issue", "action": "start_new"},
+                    {"text": "Export Trace", "action": "export_trace"}
+                ]
+            })
+            
+            return {"analysis_results": final_report["report_data"]}
         else:
-            st.error("Could not parse the consolidated report from the LLM response.")
+            emit_message("error", "Could not parse the consolidated report from the LLM response.")
             return {"analysis_results": {"error": "LLM response parsing failed."}}
     except Exception as e:
-        st.error(f"An error occurred while generating the consolidated report: {e}")
+        emit_message("error", f"An error occurred while generating the consolidated report: {e}")
         return {"analysis_results": {"error": str(e)}}
+    
 
 def should_continue_tracing(state: RootCauseAnalysisState):
     """Decides whether to continue the backward trace or end."""
@@ -1188,4 +1653,39 @@ workflow.add_edge("issue_analyser", END)
 # Compile the graph
 app = workflow.compile()
 
+def main():
+    """
+    Main execution function that reads input and runs the RCA workflow
+    """
+    try:
+        # Read input from stdin (sent by Node.js)
+        input_data = sys.stdin.read().strip()
+        
+        if not input_data:
+            emit_message("error", "No input data received")
+            return
+        
+        # Parse the input JSON
+        try:
+            user_input = json.loads(input_data)
+            emit_message("user", user_input)
+        except json.JSONDecodeError as e:
+            emit_message("error", f"Invalid JSON input: {e}")
+            return
+        
+        emit_message("bot", "Starting Root Cause Analysis process...")
+        emit_progress("workflow", "started", {"input_received": True})
+        
+        # Run the workflow
+        final_state = app.invoke(user_input)
+        
+        emit_progress("workflow", "completed")
+        emit_message("bot", "Root Cause Analysis completed successfully!")
+        
+    except Exception as e:
+        error_msg = f"Error in main execution: {str(e)}"
+        logger.error(error_msg)
+        emit_message("error", error_msg)
 
+if __name__ == "__main__":
+    main()

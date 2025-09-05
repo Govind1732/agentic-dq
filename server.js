@@ -109,15 +109,15 @@ io.on('connection', (socket) => {
     // Add user message to conversation
     const userMessage = {
       id: `msg_${Date.now()}`,
-      text: message,
-      sender: 'user',
+      role: 'user',
+      content: message,
+      type: 'normal',
+      status: 'static',
       timestamp: new Date().toISOString(),
-      type: 'text'
     };
     
     conversation.messages.push(userMessage);
     conversation.updated_at = new Date().toISOString();
-
     // Emit message immediately
     socket.emit('message_received', {
       conversationId,
@@ -137,10 +137,11 @@ io.on('connection', (socket) => {
       setTimeout(() => {
         const aiResponse = {
           id: `msg_${Date.now()}`,
-          text: generateChatResponse(message),
-          sender: 'ai',
+          content: generateChatResponse(message),
+          role: 'bot',
+          type: 'normal',
+          status: 'static',
           timestamp: new Date().toISOString(),
-          type: 'text'
         };
         
         conversation.messages.push(aiResponse);
@@ -155,10 +156,10 @@ io.on('connection', (socket) => {
   });
 
   // Handle RCA process initiation
-  socket.on('start_rca_analysis', (data) => {
-    const { conversationId, rcaData } = data;
-    startRCAProcess(socket, conversationId, rcaData);
-  });
+  // socket.on('start_rca_analysis', (data) => {
+  //   const { conversationId, rcaData } = data;
+  //   startRCAProcess(socket, conversationId, rcaData);
+  // });
 
   // Handle process termination
   socket.on('terminate_process', (data) => {
@@ -235,9 +236,9 @@ function startRCAProcess(socket, conversationId, inputData) {
     console.log(`Starting RCA process for conversation: ${conversationId}`);
     
     // Python script path - using the updated version
-    const pythonScriptPath = path.join(__dirname, '..', 'adq-python', 'scripts', 'agentic_dq_claude_v2.py');
-    const venvPythonPath = path.join(__dirname, '..', 'adq-python', '.venv', 'Scripts', 'python.exe');
-    
+    const pythonScriptPath = path.join(__dirname, '..', 'adq-python-script', 'scripts', 'agentic_dq_claude_v2.py');
+    const venvPythonPath = path.join(__dirname, '..', 'adq-python-script', '.venv', 'Scripts', 'python.exe');
+
     // Parse input data
     let rcaInput;
     try {
@@ -279,13 +280,6 @@ function startRCAProcess(socket, conversationId, inputData) {
       }
     }, 10 * 60 * 1000);
 
-    // Send initial status
-    // socket.emit('rca_started', {
-    //   conversationId,
-    //   message: 'I got your issue. Let me start analyzing the data to identify the root cause',
-    //   timestamp: new Date().toISOString()
-    // });
-
     // Send input data to Python process
     pythonProcess.stdin.write(JSON.stringify(rcaInput));
     pythonProcess.stdin.end();
@@ -308,31 +302,7 @@ function startRCAProcess(socket, conversationId, inputData) {
           console.log(`[${processKey}] Received JSON:`, jsonMessage);
           
           // Route different message types appropriately
-          switch (jsonMessage.type) {
-            case 'progress':
-              socket.emit('progress', jsonMessage);
-              break;
-            case 'analysis_result':
-              socket.emit('analysis_result', jsonMessage);
-              break;
-            case 'table_data':
-              socket.emit('table_data', jsonMessage);
-              break;
-            case 'lineage_graph':
-              socket.emit('lineage_graph', jsonMessage);
-              break;
-            case 'node_status_update':
-              socket.emit('node_status_update', jsonMessage);
-              break;
-            case 'step_result':
-              socket.emit('step_result', jsonMessage);
-              break;
-            case 'emit_step_title':
-              socket.emit('emit_step_title', jsonMessage);
-              break;
-            case 'final_report':
-              socket.emit('final_report', jsonMessage);
-              break;
+          switch (jsonMessage.role) {
             case 'bot':
             case 'user':
               socket.emit('message', jsonMessage);
@@ -412,11 +382,11 @@ function startRCAProcess(socket, conversationId, inputData) {
           timestamp: new Date().toISOString()
         });
       } else if (code !== null && code !== 0) {
-        // socket.emit('rca_error', {
-        //   conversationId,
-        //   message: `RCA process failed with exit code: ${code}`,
-        //   timestamp: new Date().toISOString()
-        // });
+        socket.emit('rca_error', {
+          conversationId,
+          message: `RCA process failed with exit code: ${code}`,
+          timestamp: new Date().toISOString()
+        });
         console.error(`RCA process failed with exit code: ${code}`);
       }
     });
@@ -438,11 +408,11 @@ function startRCAProcess(socket, conversationId, inputData) {
   } catch (error) {
     console.error(`Error starting RCA process for ${processKey}:`, error);
     
-    // socket.emit('rca_error', {
-    //   conversationId,
-    //   message: `Failed to initialize RCA process: ${error.message}`,
-    //   timestamp: new Date().toISOString()
-    // });
+    socket.emit('rca_error', {
+      conversationId,
+      message: `Failed to initialize RCA process: ${error.message}`,
+      timestamp: new Date().toISOString()
+    });
   }
 }
 
@@ -472,7 +442,7 @@ const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '127.0.0.1';
 
 server.listen(PORT, HOST, () => {
-  console.log(`🚀 Integrated Gemini + RCA Backend running on http://${HOST}:${PORT}`);
+  console.log(`🚀 Integrated Backend running on http://${HOST}:${PORT}`);
   console.log(`📡 WebSocket server ready for connections`);
   console.log(`🔗 Frontend should connect to: http://${HOST}:${PORT}`);
 });

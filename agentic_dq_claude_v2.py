@@ -96,125 +96,134 @@ class RootCauseAnalysisState(TypedDict):
     agent_input: str
     anamoly_node_response: str
     loaded_lineage_graphs : Optional[Dict[str, nx.DiGraph]]
+    # Iteration safeguards
+    iteration_count: Optional[int]
+    max_iterations: Optional[int]
+    processed_nodes: Optional[set]
+
+# Utility functions
+
+def convert_networkx_to_reactflow(graph: nx.DiGraph) -> Dict[str, Any]:
+    """Convert NetworkX graph to React Flow format with fully qualified node IDs"""
+    import hashlib
+    
+    nodes = []
+    edges = []
+    
+    # Create a mapping for unique node IDs to prevent collisions
+    node_id_mapping = {}
+    
+    # Convert nodes
+    for node_id, node_data in graph.nodes(data=True):
+        # Create a fully qualified ID by combining the node_id with a hash of its data
+        node_str = str(node_id)
+        
+        # If the node already looks like it has a full table path, use it as is
+        # Otherwise, make it more unique by adding data context
+        if '.' in node_str and len(node_str.split('.')) >= 2:
+            qualified_id = node_str
+        else:
+            # Create a more unique ID by hashing some node data
+            data_hash = hashlib.md5(str(node_data).encode()).hexdigest()[:8]
+            qualified_id = f"{node_str}_{data_hash}"
+        
+        node_id_mapping[node_id] = qualified_id
+        
+        node = {
+            "id": qualified_id,
+            "data": {
+                "label": node_data.get('label', str(node_id)),
+                "originalId": str(node_id),  # Keep original for reference
+                **node_data
+            },
+            "position": {
+                "x": node_data.get('x', 0),
+                "y": node_data.get('y', 0)
+            },
+            "type": "default"
+        }
+        nodes.append(node)
+    
+    # Convert edges using the mapped IDs
+    for source, target, edge_data in graph.edges(data=True):
+        qualified_source = node_id_mapping[source]
+        qualified_target = node_id_mapping[target]
+        
+        edge = {
+            "id": f"{qualified_source}-{qualified_target}",
+            "source": qualified_source,
+            "target": qualified_target,
+            "type": "default",
+            "data": edge_data
+        }
+        edges.append(edge)
+    
+    return {
+        "nodes": nodes,
+        "edges": edges
+    }
 
 # Emit functions for Node.js communication
 
-def emit_message(message_type: str, content: str, metadata: Dict = None):
+# Replace the old rigid signature with this flexible one
+def emit_message(role: str, content: str = "", type: str = "normal", status: str = "static", *,
+                 stepNumber: Optional[int] = None,
+                 stepTitle: Optional[str] = None,
+                 stepContent: Optional[str] = None,
+                 stepComponent: Optional[str] = None,
+                 lineageData: Optional[Dict] = None,
+                 metadata: Optional[Dict] = None):
     """
-    Emit a JSON message to stdout for Node.js to capture and forward to frontend
-    """
-    message = {
-        "type": message_type,
-        "content": content,
-        "timestamp": datetime.now().isoformat(),
-        "metadata": metadata or {}
-    }
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
-
-def emit_step_title(role: str, step_number: str, title: str):
-    """
-    Emit a step title message for the conversation flow
+    Flexible emitter — build a dict from provided args and kwargs.
+    Use keyword args for optional fields. This avoids TypeError from mismatched calls.
     """
     message = {
-        "type": "emit_step_title",
         "role": role,
-        "step_number": int(step_number),
-        "title": title
-    }
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
-
-def emit_lineage_graph(graph_data: Dict):
-    """
-    Emit lineage graph structure for dynamic visualization
-    """
-    message = {
-        "type": "lineage_graph",
-        "data": graph_data,
-        "timestamp": datetime.now().isoformat()
-    }
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
-
-def emit_node_status_update(node_id: str, status: str):
-    """
-    Emit node status updates for dynamic graph coloring
-    """
-    message = {
-        "type": "node_status_update",
-        "data": {
-            "nodeId": node_id,
-            "status": status
-        },
-        "timestamp": datetime.now().isoformat()
-    }
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
-
-def emit_step_result(step_number: int, step_type: str, table: str, column: str, sql_query: str, result: str, status: str = "success"):
-    """
-    Emit structured step results matching the Figma conversation flow
-    """
-    message = {
-        "type": "step_result",
-        "data": {
-            "step_number": step_number,
-            "step_type": step_type,
-            "table": table,
-            "column": column,
-            "sql_query": sql_query,
-            "result": result,
-            "status": status
-        },
-        "timestamp": datetime.now().isoformat()
-    }
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
-
-def emit_progress(step_name: str, status: str, details: Dict = None):
-    """
-    Emit progress updates for the frontend
-    """
-    progress_message = {
-        "type": "progress",
-        "step": step_name,
+        "content": content,
+        "type": type,
         "status": status,
-        "details": details or {},
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
-    sys.stdout.write(json.dumps(progress_message) + "\n")
-    sys.stdout.flush()
+    # add optional fields only if provided
+    if stepNumber is not None:
+        message["stepNumber"] = stepNumber
+    if stepTitle is not None:
+        message["stepTitle"] = stepTitle
+    if stepContent is not None:
+        message["stepContent"] = stepContent
+    if stepComponent is not None:
+        message["stepComponent"] = stepComponent
+    if lineageData is not None:
+        message["lineageData"] = lineageData
+    if metadata is not None:
+        message["metadata"] = metadata
 
-def emit_analysis_result(layer: str, table: str, column: str, sql_query: str, reasoning: str, inference: str):
-    """
-    Emit structured analysis results for display in the chatbot
-    """
-    result = {
-        "type": "analysis_result",
-        "layer": layer,
-        "table": table,
-        "column": column,
-        "sql_query": sql_query,
-        "reasoning": reasoning,
-        "inference": inference,
-        "timestamp": datetime.now().isoformat()
-    }
-    sys.stdout.write(json.dumps(result) + "\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
+    except Exception as e:
+        logger.error(f"Failed to emit message: {e}")
 
-def emit_table_data(data: Dict, title: str):
-    """
-    Emit table data for frontend display
-    """
-    table_message = {
-        "type": "table_data",
-        "title": title,
-        "data": data,
-        "timestamp": datetime.now().isoformat()
-    }
-    sys.stdout.write(json.dumps(table_message) + "\n")
-    sys.stdout.flush()
+def emit_lineage_graph(graph_data, title="Lineage Graph"):
+    """Emit lineage graph data for visualization"""
+    emit_message(
+        content=f"Generated {title}",
+        role="bot",
+        stepContent=title,
+        lineageData=graph_data
+    )
+
+def emit_lineage_graph_realtime(graph_data, step_title, step_number=None):
+    """Emit real-time lineage graph updates during RCA process"""
+    emit_message(
+        content=f"Lineage update: {step_title}",
+        role="bot",
+        stepNumber=step_number,
+        stepTitle=step_title,
+        stepContent=f"Real-time lineage update for {step_title}",
+        lineageData=graph_data
+    )
+
 
 def build_graph_structure_from_lineage(lineage_graph: nx.DiGraph, l0_key: str) -> Dict:
     """Convert NetworkX lineage graph to frontend-compatible graph structure"""
@@ -236,32 +245,39 @@ def build_graph_structure_from_lineage(lineage_graph: nx.DiGraph, l0_key: str) -
                 if table_display_name not in tables_added:
                     nodes.append({
                         "id": table_display_name,
-                        "label": table_display_name,
+                        "name": table_display_name,  # Changed from "label" to "name"
                         "type": "table"
                     })
                     tables_added.add(table_display_name)
 
-                # Add column node
+                # Add column node with parentId reference
                 nodes.append({
                     "id": node,
-                    "label": column_name,
+                    "name": column_name,  # Changed from "label" to "name"
                     "type": "column",
-                    "parent": table_display_name
+                    "parentId": table_display_name  # Changed from "parent" to "parentId"
                 })
             except Exception as e:
                 logger.warning(f"Error processing node {node}: {e}")
                 continue
 
-        # Add edges
+        # Convert edges to connections format expected by frontend
+        connections = []
         for source, target in lineage_graph.edges():
-            edges.append({"source": source, "target": target})
-        print('Nodes added:', nodes)
-        print('Edges added:', edges)
-        return {"nodes": nodes, "edges": edges}
+            connections.append({"from": source, "to": target})
+
+        logger.debug(f'Nodes added: {nodes}')
+        logger.debug(f'Connections added: {connections}')
+
+        # Return in the format expected by ChatWindow
+        return {
+            "nodes": nodes, 
+            "connections": connections  # Changed from "edges" to "connections"
+        }
 
     except Exception as e:
         logger.error(f"Error building graph structure: {e}")
-        return {"nodes": [], "edges": []}
+        return {"nodes": [], "connections": []}
 
 def isTokenExpired(path):
     try:
@@ -320,10 +336,10 @@ def bigquery_execute(query: str) -> pd.DataFrame:
         logger.info(f"Query: {query}")
         df_results = client.query(query).to_dataframe()
         return df_results
-    except Exception as e :
-        error_message = f"Error executing BigQuery query: {e}"
-        logger.info(error_message)
-        return error_message
+    except Exception as e:
+        logger.exception(f"BigQuery query failed: {e}")
+        # Return an empty DataFrame so callers can check .empty
+        return pd.DataFrame()
 
 def extract_metric_from_output(df_json, sql_query) -> Optional[float]:
     """Safely extracts the first numeric value from a query output."""
@@ -336,14 +352,20 @@ def extract_metric_from_output(df_json, sql_query) -> Optional[float]:
                             
     try:
         response = llm.invoke(actual_value_prompt).content.strip()
-        match = re.search(r"[-+]?\d*\d\.?\d+", response)
-        if match:
-            return float(match.group(0))
-        else:
-            logger.info(f"LLM didnt return the actual value:{response}")
-            return 0
-    except:
-        logger.error("Failed to get actual value")
+        
+        # First try to convert response directly to float
+        try:
+            return float(response)
+        except ValueError:
+            # If direct conversion fails, use improved regex as fallback
+            match = re.search(r"[-+]?\d*\.?\d+", response)
+            if match:
+                return float(match.group(0))
+            else:
+                logger.info(f"LLM didnt return the actual value:{response}")
+                return 0.0
+    except Exception as e:
+        logger.error(f"Failed to get actual value: {e}")
         return None
 
 def get_predecessor_info(node_name: str, lineage_graph: nx.DiGraph) -> List[Dict[str, str]]:
@@ -428,21 +450,53 @@ def replace_technical_date_with_business_date(sql_query: str, table_name: str) -
         return sql_query
 
 def extract_sql_from_text(text: str) -> str:
-    """Extracts the SQL query from the LLM response."""
+    """Extracts the SQL query from the LLM response with enhanced fallback patterns."""
+    # First try: standard SQL code blocks
     match = re.search(r"```sql\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
     if match:
         sql_query = match.group(1).strip()
-        return sql_query
     else:
+        # Second try: CTE patterns without code blocks
         match_cte = re.search(r"(WITH\s+[\s\S]+?SELECT[\s\S]*?;)", text, re.IGNORECASE | re.MULTILINE)
         if match_cte:
-            query = match_cte.group(1).strip()
-            return query
-    return text.strip()  # Return original text if no SQL found
+            sql_query = match_cte.group(1).strip()
+        else:
+            # Third try: Simple SELECT patterns
+            match_select = re.search(r"(SELECT[\s\S]*?(?:;|$))", text, re.IGNORECASE | re.MULTILINE)
+            if match_select:
+                sql_query = match_select.group(1).strip()
+            else:
+                # Fourth try: Any code block content
+                match_code = re.search(r"```\n?(.*?)\n?```", text, re.DOTALL | re.IGNORECASE)
+                if match_code:
+                    sql_query = match_code.group(1).strip()
+                else:
+                    # Last resort: use the entire text
+                    sql_query = text.strip()
+    
+    # Sanity check: ensure it contains SQL keywords
+    if not re.search(r"\b(SELECT|WITH|INSERT|UPDATE|DELETE)\b", sql_query, re.IGNORECASE):
+        logger.warning(f"Extracted text doesn't appear to be SQL: {sql_query[:100]}...")
+        # Try to find any SQL-like content in the text
+        sql_patterns = re.findall(r"(SELECT[\s\S]*?(?:FROM|;|$))", text, re.IGNORECASE)
+        if sql_patterns:
+            return sql_patterns[0].strip()
+        return ""
+    
+    return sql_query
 
-def anamoly_identifier_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
-    emit_step_title('bot', '1', 'Anomaly Identification')
+def anamaly_identifier_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
+    emit_message(role="bot", content="Checking the rules that are involved in this column which still persists are not ...", type="normal", status="progress")
     user_input = state
+    
+    # Safe access to state keys with fallbacks
+    col = state.get('failed_column') or state.get('column_name')
+    tbl = state.get('failed_table') or state.get('table_name')
+    failed_rule = state.get('failed_rule') or state.get('validation_query', '')
+    
+    emit_message(role="bot", stepTitle=f" ✅ Found Validation Rule for {col} cycles within the {tbl} dataset", type="stepper", stepNumber=1, status="static")
+    emit_message(role="bot", stepContent=failed_rule, type="stepper", stepNumber=1, status="static")
+    
     prompt = f"""You are a data validation assistant. Your task is to analyze validation results and generate clear, concise, and professional summaries for data quality issues based on provided metadata.
                 Your response must:
                 - State the anomaly clearly, identifying the affected table, column, and date.
@@ -457,15 +511,14 @@ def anamoly_identifier_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     logger.info('Summarizing the inputs recieved.')
 
     response = llm.invoke(prompt).content
-    failed_rule = user_input["validation_query"]
     # st.session_state.messages.append({"role": "bot", "content": response})
-    emit_message("bot", response) # Make sure display_message is defined
+    emit_message(role="bot", stepContent=f"🔎 Looking for deviations in the record count where {col} < 10 in {tbl}", type="stepper", stepNumber=1, status="progress")
+    emit_message(role="bot", stepContent=response, type="stepper", stepNumber=1, status="static")
     return {"anamoly_node_response": response, "validation_query": failed_rule}
 
 def analysis_decision_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
-    emit_step_title('bot', '2', 'Analysis Decision')
-    emit_progress("analysis_decision", "started", {"step": "Determining analysis approach"})
-    
+    emit_message(role="bot", stepNumber=2, stepTitle=f"Analysing historical trends", type="stepper", status="static")
+
     decider_prompt = f"""As an expert SQL analyst, your task is to determine how columns in a data quality validation query contribute to metrics.
                     Analyze the provided SQL query to identify if:
                     1.  **Each column contributes to a distinct validation metric. In this case, the `path_to_follow` is "Equality".
@@ -490,15 +543,15 @@ def analysis_decision_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
         message = "Based on provided inputs, proceeding with the failed column as the starting point for our root cause analysis."
     else:
         message = "Based on provided inputs, multiple columns are involved in this validation metric, we'll run a statistical check at the L0 layer to pinpoint the problematic column."
-    
-    emit_message("bot", message)
-    emit_progress("analysis_decision", "completed", {"path": analysis_method['path_to_follow']})
+
+    emit_message(role="bot", stepContent=message, type="stepper", stepNumber=2, status="static")
 
     return {'analysis_method': analysis_method['path_to_follow']}
 
 def parse_dq_query_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
-    emit_progress("parse_dq_query", "started", {"step": "Parsing DQ validation query"})
-    
+
+    emit_message(role="bot", stepContent="Parsing DQ Validation Query", type="stepper", stepNumber=2, status="progress")
+
     validation_query = state['validation_query']
     prompt = f"""
             You are a SQL expert. Analyze the following data quality validation SQL query.
@@ -549,11 +602,9 @@ def parse_dq_query_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
 
     if 'parsed_dq_info' in parsed_info and isinstance(parsed_info['parsed_dq_info'], dict):
         parsed_info = parsed_info['parsed_dq_info']
-    
-    emit_message("bot", "Based on your inputs, here are the tables, columns, filters, group by, and aggregation functions found.")
-    emit_table_data(parsed_info, "Parsed DQ Information")
-    emit_progress("parse_dq_query", "completed")
-    
+
+    emit_message(role="bot", stepContent=json.dumps(parsed_info, indent=2), type="stepper", stepNumber=2, status="static")
+
     return {"parsed_dq_info": parsed_info}
 
 def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
@@ -561,8 +612,7 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     Initializes the trace, performs the L0 statistical check, and formats the result
     into the new enriched trace_data structure.
     """
-    emit_progress("initialize_trace", "started", {"step": "Performing L0 layer analysis"})
-    emit_message("bot", "Identifying columns for root cause analysis and performing initial L0 checks...")
+    emit_message(role="bot", stepContent="Initializing Trace with L0 Statistical Check", type="stepper", stepNumber=2, status="progress")
 
     parsed_info = state['parsed_dq_info']
     trace_data = {}
@@ -573,6 +623,9 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     if not parsed_info or 'target_tables' not in parsed_info or not parsed_info['target_tables']:
         logger.info("No tables found in parsed DQ info. Cannot initialize trace.")
         return {"trace_data": {}, "paths_to_process": [], "mismatched_nodes": []}
+
+    # Emit the main step title first
+    emit_message(role="bot", stepTitle="Initializing L0 Statistical Analysis", type="stepper", stepNumber=2, status="static")
 
     filters = parsed_info.get('filters', [])
     group_by = parsed_info.get('group_by', [])
@@ -600,7 +653,16 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
              - If there are any division or multiplier then use the same on individual column.
             """
 
-            l0_query = extract_sql_from_text(llm.invoke(l0_sql_prompt).content)
+            try:
+                l0_query = extract_sql_from_text(llm.invoke(l0_sql_prompt).content)
+                if not l0_query:
+                    emit_message(role="error", content=f"Failed to generate SQL for {table}.{column}")
+                    continue
+            except Exception as e:
+                logger.error(f"LLM failed to generate L0 query for {table}.{column}: {e}")
+                emit_message(role="error", content=f"Failed to generate SQL for {table}.{column}: {e}")
+                continue
+                
             l0_query = replace_technical_date_with_business_date(l0_query, table.rsplit('.', 1)[-1])
             l0_output_df = bigquery_execute(l0_query) # Make sure bigquery_execute is defined
             actual_value = extract_metric_from_output(l0_output_df.to_json(orient='records'), l0_query)
@@ -619,11 +681,20 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                                 - The new query should calculate the standard deviation and expected value, but exclude the specific date mentioned in the original query. The date range for the calculation should end on the day before the specified date.
                                 """
 
-            std_dev_sql = extract_sql_from_text(llm.invoke(std_dev_prompt).content)
-            std_dev_df = bigquery_execute(std_dev_sql)
-
-            expected_std_dev = float(std_dev_df['std_dev'].iloc[0]) if not std_dev_df.empty else 0.0
-            expected_value = float(std_dev_df['expected_value'].iloc[0]) if not std_dev_df.empty else 0.0
+            try:
+                std_dev_sql = extract_sql_from_text(llm.invoke(std_dev_prompt).content)
+                if not std_dev_sql:
+                    logger.warning(f"Failed to generate std dev query for {table}.{column}, using defaults")
+                    expected_std_dev = 1.0
+                    expected_value = 0.0
+                else:
+                    std_dev_df = bigquery_execute(std_dev_sql)
+                    expected_std_dev = float(std_dev_df['std_dev'].iloc[0]) if not std_dev_df.empty and 'std_dev' in std_dev_df.columns else 1.0
+                    expected_value = float(std_dev_df['expected_value'].iloc[0]) if not std_dev_df.empty and 'expected_value' in std_dev_df.columns else 0.0
+            except Exception as e:
+                logger.error(f"Failed to calculate std dev for {table}.{column}: {e}")
+                expected_std_dev = 1.0
+                expected_value = 0.0
 
             lower_bound = expected_value - (3 * expected_std_dev)
             upper_bound = expected_value + (3 * expected_std_dev)
@@ -648,6 +719,9 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                 l0_key = f"{table}.{column}"
                 paths_to_process.append((0, table, column, l0_key))
                 mismatched_nodes.append({"from_node": "External Alert", "to_node": l0_key, "details": l0_trace_entry})
+                
+                emit_message(role="bot", stepContent=f"🚩 Anomaly detected at L0 for {table}.{column}. Actual value {actual_value:.2f} is outside the expected range [{lower_bound:.2f}, {upper_bound:.2f}]. Initiating lineage trace...", type="stepper", stepNumber=2, status="static")
+                
                 lineage_table_name = table.rsplit('.', 1)[-1]
                 graph_file_path = f"{lineage_graphs}/{lineage_table_name}.{column}.gexf"
                 # graph_file_path = f"lineage_graphs/{l0_key.replace(':','_')}.gexf"
@@ -655,16 +729,30 @@ def initialize_trace_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                     lineage_graph = nx.read_gexf(graph_file_path)
                     loaded_graphs[l0_key] = lineage_graph
                     logger.info(f"Successfully loaded lineage graph for '{l0_key}' from {graph_file_path}")
+                    
+                    # Emit real-time lineage graph for visualization
+                    graph_data = convert_networkx_to_reactflow(lineage_graph)
+                    emit_lineage_graph_realtime(
+                        graph_data=graph_data,
+                        step_title=f"Initial Lineage - {table}.{column}",
+                        step_number=2
+                    )
+                    
                 except:
                     logger.info(f"Error in loading lineage graph for '{l0_key}' from {graph_file_path}")
                 
                 inference = f"A significant deviation has been detected in the {column} column's values over the past month. A lineage trace is necessary to uncover the root cause."
             else:
+                emit_message(role="bot", stepContent=f"✅ No anomaly at L0 for {table}.{column}. Actual value {actual_value:.2f} is within the expected range [{lower_bound:.2f}, {upper_bound:.2f}]. No lineage trace needed.", type="stepper", stepNumber=2, status="static")
+                
                 inference = f"The data in column {column} falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary."
+            
+            emit_message(role="bot", stepContent=f"Analyzing the data on L0 layer for <b>{column}</b>", type="stepper", stepNumber=2, status="progress")
+            emit_message(role="bot", stepContent=f"Reasoning: <b>{reasoning}</b>", type="stepper", stepNumber=2, status="static")
+            emit_message(role="bot", stepContent=f"SQL query for actual value calculation: <pre><code>{l0_query}</code></pre>", type="stepper", stepNumber=2, status="static")
+            emit_message(role="bot", stepContent=f"{inference}", type="stepper", stepNumber=2, status="static")
 
-            emit_analysis_result("L0", table, column, l0_query, reasoning, inference)
-
-    emit_progress("initialize_trace", "completed", {"paths_found": len(paths_to_process)})
+    emit_message(role="bot", stepContent=f"Initialized trace for {len(paths_to_process)} paths.", type="stepper", stepNumber=2, status="static")
     logger.info(f"Initialized trace for {len(paths_to_process)} paths.")
     return {"trace_data": trace_data, "paths_to_process": paths_to_process, "mismatched_nodes": mismatched_nodes, "loaded_lineage_graphs" : loaded_graphs}
 
@@ -673,8 +761,8 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
     Performs the initial check for a single-column failure and formats the result
     into the new enriched trace_data structure.
     """
-    emit_message("bot", "This appears to be a single-column validation. I am now performing the initial check on layer L0 to validate the alert...")
-    
+    emit_message(role="bot", stepContent="This appears to be a single-column validation. I am now performing the initial check on layer L0 to validate the alert...", type="stepper", stepNumber=2, status="progress")
+
     validation_query = state['validation_query']
     failed_column = state['failed_column']
     failed_table = state['failed_table']
@@ -691,9 +779,9 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
     query_output_df = bigquery_execute(individual_query)
     actual_value = extract_metric_from_output(query_output_df.to_json(orient='records'), individual_query)
 
-    sd_threshold = state['sd_threshold']
-    ev = state['expected_value']
-    sd = state['expected_std_dev']
+    sd_threshold = state.get('sd_threshold', 3.0)  # Default to 3 standard deviations
+    ev = state.get('expected_value', 0.0)
+    sd = state.get('expected_std_dev', 1.0)
     lower_bound = ev - (sd_threshold * sd)
     upper_bound = ev + (sd_threshold * sd)
 
@@ -734,6 +822,7 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
         l0_key = f"{failed_table}.{failed_column}"
         paths_to_process.append((0, failed_table, failed_column, l0_key))
         mismatched_nodes.append({"from_node": "External Alert", "to_node": l0_key, "details": l0_trace_entry})
+        
         lineage_table_name = failed_table.rsplit('.', 1)[-1]
         graph_file_path = f"{lineage_graphs}/{lineage_table_name}.{failed_column}.gexf"
         try:
@@ -743,31 +832,15 @@ def databuck_failure_validation(state: RootCauseAnalysisState) -> Dict[str, Any]
         except:
             logger.info(f"Error in loading lineage graph for '{l0_key}' from {graph_file_path}")
         
-        # Emit detailed message for deviation found case
-        emit_message("bot", f"Analyzing the data on L0 layer for <b>{failed_column}</b>")
-        emit_message("bot", f"Reasoning: <b>{reasoning}</b>")
-        emit_message("bot", f"SQL query for actual value: <pre><code>{individual_query}</code></pre>")
-        emit_message("bot", f"A significant deviation has been detected in the <b>{failed_column}</b> column's values over the past month. A lineage trace is necessary to uncover the root cause.")
-        # emit_message("analysis_detail", f"L0 Analysis - Deviation Detected", {
-        #     "column": failed_column,
-        #     "table": failed_table.rsplit('.', 1)[-1],
-        #     "reasoning": reasoning,
-        #     "sql_query": individual_query,
-        #     "conclusion": "A significant deviation has been detected in the column's values. A lineage trace is necessary to uncover the root cause."
-        # })
+        emit_message(role="bot", stepContent=f"Analyzing the data on L0 layer for <b>{failed_column}</b>", type="stepper", stepNumber=2, status="progress")
+        emit_message(role="bot", stepContent=f"Reasoning: <b>{reasoning}</b>", type="stepper", stepNumber=2, status="static")
+        emit_message(role="bot", stepContent=f"SQL query for actual value: <pre><code>{individual_query}</code></pre>", type="stepper", stepNumber=2, status="static")
+        emit_message(role="bot", stepContent=f"A significant deviation has been detected in the <b>{failed_column}</b> column's values over the past month. A lineage trace is necessary to uncover the root cause.", type="stepper", stepNumber=2, status="static")
     else:
-        # Emit detailed message for no deviation case
-        emit_message("bot", f"Analyzing the data on L0 layer for <b>{failed_column}</b>")
-        emit_message("bot", f"Reasoning: <b>{reasoning}</b>")
-        emit_message("bot", f"SQL query for actual value: <pre><code>{individual_query}</code></pre>")
-        emit_message("bot", f"The data in column <b>{failed_column}</b> falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary.")
-        # emit_message("analysis_detail", f"L0 Analysis - No Deviation", {
-        #     "column": failed_column,
-        #     "table": failed_table.rsplit('.', 1)[-1],
-        #     "reasoning": reasoning,
-        #     "sql_query": individual_query,
-        #     "conclusion": f"The data in column {failed_column} falls within the expected range, indicating that lineage tracing isn't necessary."
-        # })
+        emit_message(role="bot", stepContent=f"Analyzing the data on L0 layer for <b>{failed_column}</b>", type="stepper", stepNumber=2, status="progress")
+        emit_message(role="bot", stepContent=f"Reasoning: <b>{reasoning}</b>", type="stepper", stepNumber=2, status="static")
+        emit_message(role="bot", stepContent=f"SQL query for actual value: <pre><code>{individual_query}</code></pre>", type="stepper", stepNumber=2, status="static")
+        emit_message(role="bot", stepContent=f"The data in column <b>{failed_column}</b> falls within the expected range of 3 standard deviations, indicating that lineage tracing isn't necessary.", type="stepper", stepNumber=2, status="static")
 
     return {"trace_data": trace_data, "paths_to_process": paths_to_process, "mismatched_nodes": mismatched_nodes, "loaded_lineage_graphs" : loaded_graphs}
 
@@ -777,8 +850,21 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
     value comparisons (Equality vs. Statistical) directly within the step.
     Only mismatched paths are added to the next queue.
     """
-    emit_step_title('bot', '3', 'Tracing Backward')
+    
+    # Check iteration safeguards
+    iteration_count = state.get('iteration_count', 0)
+    max_iterations = state.get('max_iterations', 50)
+    processed_nodes = state.get('processed_nodes', set())
+    
+    if iteration_count >= max_iterations:
+        emit_message(role="bot", content=f"⚠️ Maximum iterations reached ({max_iterations}). Stopping to prevent infinite loops.", type="normal", status="error")
+        logger.warning(f"Maximum iterations reached: {iteration_count}/{max_iterations}")
+        return {"paths_to_process": [], "iteration_count": iteration_count}
+    
+    # Increment iteration counter
+    state['iteration_count'] = iteration_count + 1
 
+    emit_message(role="bot", stepTitle="Checking for upstream dependencies based on data lineage ...", type="stepper", stepNumber=3, status="static")
     trace_data = state['trace_data'].copy()
     paths_to_process = state['paths_to_process']
     mismatched_nodes = state.get('mismatched_nodes', [])
@@ -786,18 +872,22 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if not paths_to_process:
         logger.info("No paths left to process.")
-        return {"paths_to_process": []}
-    print("state", state)
+        return {"paths_to_process": [], "iteration_count": state['iteration_count']}
+    
+    logger.debug("trace_backward state: %s", state)
+    
     # Emit step 3 message and lineage graph (only on first run)
     first_run = any(step_num == 0 for step_num, _, _, _ in paths_to_process)
     if first_run:
-        emit_message("bot", "Checking for upstream dependencies based on data lineage ...")
-        
         # Build and emit the initial graph structure
         for _, _, _, l0_key in paths_to_process:
             if l0_key in loaded_graphs:
                 graph_structure = build_graph_structure_from_lineage(loaded_graphs[l0_key], l0_key)
-                emit_lineage_graph(graph_structure)
+                emit_message(role="bot",type="stepper",status="static",stepNumber=3,stepComponent="dataLineage",lineageData=graph_structure)
+
+                
+                # Emit L0 status as "checking" initially
+                l0_table, l0_column = l0_key.rsplit('.', 1)
                 break  # Only emit one graph structure
 
     next_paths_to_process = []
@@ -835,17 +925,6 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
             pred_table, pred_column = pred['prev_table'], pred['prev_column']
             transformation_logic = pred['transformation']
             pred_table_display = pred_table.rsplit('.', 1)[-1]
-            
-            # Emit checking status for nodes (Step B from requirements)
-            emit_node_status_update(pred_table_display, "checking")
-            emit_node_status_update(f"{pred_table}.{pred_column}", "checking")
-            
-            # Emit conversational message for checking specific column
-            emit_message("bot", f"Checking for {pred_column.upper()} Count ...")
-            emit_step_result(3, "lineage_check", pred_table, pred_column, "", 
-                           f"Identified the {pred_column} column originated from {pred_column} column from {pred_table_display} table.", "success")
-            
-            emit_message("bot", "I'm running the count checks for the previous date ...")
             
             check_result = {}
 			
@@ -913,12 +992,15 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 backward_query = replace_technical_date_with_business_date(backward_query, pred_table.rsplit('.', 1)[-1])
                 null_check_resp = bigquery_execute(backward_query)
                     
+                # Safe access to null_pct with fallback
+                null_pct = 0.0
+                if not null_check_resp.empty and 'null_pct' in null_check_resp.columns:
+                    null_pct = null_check_resp['null_pct'].iloc[0]
 
-                if null_check_resp['null_pct'][0] > 0.02:
-                
+                if null_pct > 0.02:
                     check_result.update({
                         'is_mismatch': True,
-                        'mismatch_reason': f"NULL value at this column is more than {null_check_resp['null_pct'][0]}%."
+                        'mismatch_reason': f"NULL value at this column is more than {null_pct}%."
                     })
                 else:
                     check_result.update({
@@ -1039,13 +1121,8 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
             trace_data[l0_table][l0_column].append(new_step_data)
 
             if check_result['is_mismatch']:
-                emit_node_status_update(f"{pred_table}.{pred_column}", "mismatch")
-                emit_node_status_update(pred_table_display, "mismatch")
-                
-                # Emit results message matching Figma design
-                emit_step_result(3, "count_check_result", pred_table, pred_column, "", 
-                               f"Results from count checks for the previous date: The deviation in {pred_column} < 10 originates from the {pred_column} column in the '{pred_table_display}' table, indicating an issue at this earlier stage.", "warning")
-
+                emit_message(role="bot", stepTitle=f"Trace Step {next_step_num} - Found deviation upstream", stepNumber=3, type="stepper", status="static")
+                emit_message(role="bot", stepContent=f"⚠️ Deviation found in {pred_column} column at {pred_table_display} table", stepNumber=3, type="stepper", status="static")
                 mismatched_nodes.append({
                     "l0_key": l0_key,
                     "from_node": full_node_name,
@@ -1053,39 +1130,53 @@ def trace_backward_step_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "details": new_step_data
                 })
                 next_paths_to_process.append((next_step_num, pred_table, pred_column, l0_key))
-            else:
-                emit_node_status_update(f"{pred_table}.{pred_column}", "match")
-                emit_node_status_update(pred_table_display, "match")
                 
-                emit_step_result(3, "count_check_result", pred_table, pred_column, "", 
-                               f"Data consistent at {pred_table_display}.{pred_column} - no issues found.", "success")
-    return {"trace_data": trace_data, "paths_to_process": next_paths_to_process, "mismatched_nodes": mismatched_nodes}
+                # Emit real-time lineage graph update showing the mismatch path
+                try:
+                    graph_data = convert_networkx_to_reactflow(lineage_graph)
+                    emit_lineage_graph_realtime(
+                        graph_data=graph_data,
+                        step_title=f"Trace Step {next_step_num} - Deviation in {pred_table_display}.{pred_column}",
+                        step_number=3
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to emit real-time lineage update: {e}")
+                    
+            else:
+                emit_message(role="bot", stepContent=f"✅ Data consistent at {pred_table_display}.{pred_column} - no issues found", stepNumber=3, type="stepper", status="static")
+    return {
+        "trace_data": trace_data, 
+        "paths_to_process": next_paths_to_process, 
+        "mismatched_nodes": mismatched_nodes,
+        "iteration_count": state['iteration_count'],
+        "processed_nodes": processed_nodes
+    }
 
 def execute_and_correct_query(query, retries=3):
     """
     Executes a BigQuery SQL query and attempts to correct it on failure.
     """
     for attempt in range(retries):
-        try:
-            output_df = bigquery_execute(query)
-            if isinstance(output_df, pd.DataFrame):
-                return output_df
-        except Exception as e:
-            logger.warning(f"Query failed on attempt {attempt+1}: {e}")
-            sql_correction_prompt = f"""As an expert BigQuery SQL generator, your role is to debug and correct SQL queries based on error messages.
-            Examine the BigQuery error output: {e}
-            The original errored SQL query is: {query}
-            Please generate the fully corrected and runnable BigQuery SQL query."""
-            
-            try:
-                correction_response = llm.invoke(sql_correction_prompt).content
-                corrected_query = extract_sql_from_text(correction_response)
-                query = corrected_query # Update query for next attempt
-            except Exception as llm_e:
-                logger.error(f"Failed to get a corrected query from LLM: {llm_e}")
-                return pd.DataFrame() # Return an empty DataFrame on LLM failure
+        output_df = bigquery_execute(query)
+        if isinstance(output_df, pd.DataFrame) and not output_df.empty:
+            return output_df
 
-    logger.error(f"Failed to execute query after {retries} attempts.")
+        logger.warning(f"Attempt {attempt+1}: query returned no usable result. Attempting LLM correction...")
+        sql_correction_prompt = f"""As an expert BigQuery SQL generator, your role is to debug and correct SQL queries based on error messages.
+        The original errored SQL query is: {query}
+        Please generate the fully corrected and runnable BigQuery SQL query."""
+        
+        try:
+            correction_response = llm.invoke(sql_correction_prompt).content
+            corrected_query = extract_sql_from_text(correction_response)
+            if corrected_query:
+                query = corrected_query
+                continue
+        except Exception as llm_e:
+            logger.error(f"LLM correction failed: {llm_e}")
+            break
+
+    logger.error("All attempts failed; returning empty DataFrame")
     return pd.DataFrame()
 
 def perform_statistical_check(table, column, query, actual_value):
@@ -1128,12 +1219,12 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     into a single, consolidated report that summarizes all issues and root causes.
     """
     # emit_message("bot", "The lineage trace is complete. Here is the final root cause summary.")
-    emit_step_title("bot", "", "Final Root Cause Summary")
+    # emit_step_title("bot", , "Final Root Cause Summary")
     trace_data = state.get("trace_data", {})
     all_mismatches = state.get("mismatched_nodes", [])
 
     if not trace_data:
-        emit_message("error", "Analysis failed: No trace data was generated.")
+        emit_message(role="error", content="Analysis failed: No trace data was generated.")
         return {"analysis_results": {"error": "No trace data"}}
 
     # --- 1. GATHER AND CONSOLIDATE ALL DATA FROM THE ENTIRE TRACE ---
@@ -1149,7 +1240,14 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
     impacted_datasets = sorted(list(set(step['table_name'] for step in all_trace_steps)))
 
     # Build a representative lineage traversal summary table (e.g., from the first path)
-    representative_trace_path = next(iter(trace_data.values()), {}).get(next(iter(next(iter(trace_data.values()), {}).keys()), None), [])
+    representative_trace_path = []
+    if trace_data:
+        first_table_data = next(iter(trace_data.values()), {})
+        if first_table_data:
+            first_column_key = next(iter(first_table_data.keys()), None)
+            if first_column_key:
+                representative_trace_path = first_table_data[first_column_key]
+    
     lineage_summary_table = []
 
     for step in sorted(representative_trace_path, key=lambda x: x['step_num']):
@@ -1204,7 +1302,7 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
         "severity": "High | Medium | Low",
         "business_impact": "A brief, inferred description of the overall business impact."
       }},
-      "lineage_traversal": {json.dumps(lineage_summary_table)},
+      "lineage_traversal": [],
       "root_cause_analysis": {{
         "origin_node": "The deepest layer where issues were found, e.g., Layer 2 - Transformation Layer.Mention Layer Number and Table name and if you find it as External alert then mention L0 has the issue",
         "cause_identified": "A clear, synthesized description of all identified root causes.",
@@ -1229,6 +1327,9 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
             cleaned_report_str = match.group(1)
             report_data = json.loads(cleaned_report_str)
             
+            # Add the lineage_traversal data to the parsed report
+            report_data["lineage_traversal"] = lineage_summary_table
+            
             # Generate RCA ID and execution time
             rca_id = str(uuid.uuid4())[:8]
             execution_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -1242,9 +1343,15 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
             }
             
             # Emit the comprehensive final report
-            emit_message("final_report", "Root Cause Analysis Completed", {
-                "report": final_report
-            })
+            emit_message(role="bot", stepTitle="Final Root Cause Summary", stepNumber=4, type="stepper", status="static")
+            emit_message(
+    role="bot",
+    type="stepper",
+    status="static",
+    stepNumber=4,
+    stepContent=json.dumps(final_report, indent=2)
+)
+
             
             # Generate friendly summary message for root cause
             if deepest_failures:
@@ -1260,26 +1367,31 @@ def generate_final_report_node(state: RootCauseAnalysisState) -> Dict[str, Any]:
                 else:
                     final_summary = f"The {' and '.join(root_cause_details)} have deviated from their historical trends. This directly affected the downstream analysis."
                 
-                emit_message("bot", final_summary)
+                emit_message(role="bot", content=final_summary, type="stepper", status="static", stepNumber=4)
             else:
-                emit_message("bot", "Analysis completed with no definitive root cause identified in the traced lineage.")
-
-            # Emit feedback request and action buttons
-            emit_message("bot", "Was this helpful?")
-            emit_message("action_buttons", "", {
-                "buttons": [
-                    {"text": "Generate Summary Report", "action": "generate_report"},
-                    {"text": "Start New Issue", "action": "start_new"},
-                    {"text": "Export Trace", "action": "export_trace"}
-                ]
-            })
+                emit_message(role="bot", content="No significant deviations found.", type="stepper", status="static", stepNumber=4)
+            
+            # Emit final lineage graph showing complete analysis
+            loaded_graphs = state.get("loaded_lineage_graphs", {})
+            if loaded_graphs:
+                try:
+                    # Use the first available lineage graph for final visualization
+                    first_graph = next(iter(loaded_graphs.values()))
+                    graph_data = convert_networkx_to_reactflow(first_graph)
+                    emit_lineage_graph_realtime(
+                        graph_data=graph_data,
+                        step_title="Final RCA Analysis Complete",
+                        step_number=4
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to emit final lineage graph: {e}")
             
             return {"analysis_results": final_report["report_data"]}
         else:
-            emit_message("error", "Could not parse the consolidated report from the LLM response.")
+            emit_message(role="error", content="Could not parse the consolidated report from the LLM response.")
             return {"analysis_results": {"error": "LLM response parsing failed."}}
     except Exception as e:
-        emit_message("error", f"An error occurred while generating the consolidated report: {e}")
+        emit_message(role="error", content=f"An error occurred while generating the consolidated report: {e}")
         return {"analysis_results": {"error": str(e)}}
     
 
@@ -1289,8 +1401,9 @@ def should_continue_tracing(state: RootCauseAnalysisState):
     if not paths:
         logger.info("No more paths to process. Ending trace.")
         return "end_trace"
+    
     # Add a max depth check to prevent infinite loops
-    current_depth = paths[0][0]
+    current_depth = paths[0][0] if paths else 0
     if current_depth >= 5: # Max 5 layers back
         logger.warning(f"Reached max trace depth of {current_depth}. Ending trace.")
         return "end_trace"
@@ -1300,7 +1413,7 @@ def should_continue_tracing(state: RootCauseAnalysisState):
 
 workflow = StateGraph(RootCauseAnalysisState)
 # Add nodes
-workflow.add_node("issue_summarizer", anamoly_identifier_node)
+workflow.add_node("issue_summarizer", anamaly_identifier_node)
 workflow.add_node("rca_analysis_decision", analysis_decision_node)
 workflow.add_node("dq_failure_validation", databuck_failure_validation)
 workflow.add_node("parse_dq_query", parse_dq_query_node)
@@ -1374,24 +1487,28 @@ def main():
             # Read from stdin (original behavior for Node.js)
             input_data = sys.stdin.read().strip()
         if not input_data:
-            emit_message("error", "No input data received")
+            emit_message(role="error", content="No input data received")
             return
         
         # Parse the input JSON
         try:
             user_input = json.loads(input_data)
+            # Initialize iteration safeguards
+            user_input['iteration_count'] = 0
+            user_input['max_iterations'] = 50  # Prevent infinite loops
+            user_input['processed_nodes'] = set()
         except json.JSONDecodeError as e:
-            emit_message("error", f"Invalid JSON input: {e}")
+            emit_message(role="error", content=f"Invalid JSON input: {e}")
             return
-        
-        emit_message("bot", "I got your issue. Let me start analyzing the data to identify the root cause")
-        emit_progress("workflow", "started", {"input_received": True})
+
+        emit_message(role="bot", content="I got your issue. Let me start analyzing the data to identify the root cause", type="normal", status="static")
+        # emit_progress("workflow", "started", {"input_received": True})
         
         # Run the workflow
         app.invoke(user_input)
         
-        emit_progress("workflow", "completed")
-        emit_message("bot", "Root Cause Analysis completed successfully!")
+        # emit_progress("workflow", "completed")
+        emit_message(role="bot", content="Root Cause Analysis completed successfully!", type="normal", status="static")
 
     except Exception as e:
         error_msg = f"Error in main execution: {str(e)}"
